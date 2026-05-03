@@ -1,0 +1,238 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # Match immutable patches (`v0.1.0`, `v1.2.3`) AND prereleases
+      # (`v0.1.0-rc1`, `v1.0.0-beta.2`). Deliberately does NOT match
+      # floating major-minor tags (`v0.1`, `v1.0`) — those get retargeted
+      # by the `Move floating minor tag` step below, and a re-release on
+      # the floating tag would be a wasteful duplicate of the patch one.
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Preflight ──────────────────────────────────────────────────────
+  #
+  # Re-runs the same gates `ci.yml` runs, on the exact tagged commit,
+  # before any release artefact is built. Closes the "tag-push fires
+  # release.yml in parallel with CI/E2E" gap: nothing publishes unless
+  # the tag's commit passes fmt + clippy + tests at release time.
+  #
+  # Costs ~2-3 minutes; the build matrix needs `needs: preflight` so it
+  # waits. Tag-push CI on the same commit is still useful as an
+  # independent signal but is no longer load-bearing for the release.
+  preflight:
+    name: preflight (fmt + clippy + tests on tagged commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-preflight
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: cargo build (workspace, primes bin fixtures for tests)
+        run: cargo build --workspace --locked
+
+      - name: cargo test
+        # `--test-threads=1` matches ci.yml — plugin_e2e.rs spawns
+        # 10 subprocess plugins per test and races on shared CI runners.
+        run: cargo test --workspace --locked -- --test-threads=1
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version from ref
+        id: version
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ "$tag" =~ ^v(.+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::tag '$tag' must look like v<semver>"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross (linux-aarch64 only)
+        if: matrix.cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} -p bento-cli -p bento-mcp
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p bento-cli -p bento-mcp
+          fi
+
+      - name: Package tarball
+        id: package
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          asset="bento-${version}-${target}"
+
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/${asset}"
+          cp "target/${target}/release/bento"     "$stage/${asset}/bento"
+          cp "target/${target}/release/bento-mcp" "$stage/${asset}/bento-mcp"
+          cp README.md LICENSE-MIT LICENSE-APACHE CHANGELOG.md "$stage/${asset}/"
+
+          # Ship the Claude Code skill bundle alongside the binaries so
+          # `install.sh` can drop it under ~/.claude/skills/bento/.
+          # SKILL.md + the bento-guard PreToolUse hook are what make a
+          # fresh agent reach for `bento <verb>` instead of native
+          # package managers without the user having to remind it.
+          mkdir -p "$stage/${asset}/skills/bento"
+          cp -r skills/bento/. "$stage/${asset}/skills/bento/"
+
+          mkdir -p dist
+          tar -C "$stage" -czf "dist/${asset}.tar.gz" "${asset}"
+          (cd dist && shasum -a 256 "${asset}.tar.gz" > "${asset}.tar.gz.sha256")
+
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version from ref
+        id: version
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ "$tag" =~ ^v(.+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::tag '$tag' must look like v<semver>"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: bento-*
+          merge-multiple: true
+
+      - name: Aggregate checksums
+        working-directory: dist
+        run: |
+          cat *.sha256 > SHA256SUMS
+          ls -la
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: bento ${{ steps.version.outputs.tag }}
+          body: |
+            ## Install
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.version.outputs.tag }}/install.sh | sh -s -- ${{ steps.version.outputs.version }}
+            ```
+
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/${{ steps.version.outputs.tag }}/CHANGELOG.md) for what's new.
+
+            ### Artifacts
+
+            Four prebuilt binaries + checksums are attached to this release.
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+          generate_release_notes: true
+          make_latest: true
+
+      # Move the floating minor tag (e.g. `v0.1`) to this commit so the
+      # Marketplace listing — published once against `v0.1` — always
+      # resolves to the latest v0.1.x patch. Consumers pin
+      # `uses: bento-sh/bento@v0.1` and get updates automatically;
+      # the immutable `v0.1.Z` tag stays put for audit/rollback.
+      #
+      # Skipped for pre-release tags (anything with a hyphen, e.g.
+      # v0.1.0-rc1) so release candidates don't retarget the stable
+      # floating tag.
+      - name: Move floating minor tag
+        shell: bash
+        env:
+          FULL_TAG: ${{ steps.version.outputs.tag }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$FULL_TAG" == *-* ]]; then
+            echo "skipping floating-tag move for pre-release $FULL_TAG"
+            exit 0
+          fi
+          if [[ ! "$FULL_TAG" =~ ^(v[0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+            echo "skipping: $FULL_TAG is not a strict vMAJOR.MINOR.PATCH tag"
+            exit 0
+          fi
+          minor="${BASH_REMATCH[1]}"
+          echo "moving floating tag '$minor' to commit $COMMIT_SHA"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$minor" "$COMMIT_SHA"
+          git push origin "$minor" --force

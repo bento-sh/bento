@@ -1,0 +1,7 @@
+source "https://rubygems.org"
+
+# Zero runtime deps — the fixture exists only so bento's Ruby adapter
+# detects a Gemfile and runs its defaults. `bundle install` on an
+# empty gem set is a no-op after first-run rubygems contact (needed
+# to write Gemfile.lock), which is why this ecosystem's
+# build_needs_network flag is true in the e2e harness.

@@ -1,0 +1,14 @@
+name = "app"
+
+# No `language` — we skip the adapter auto-tasks and declare the
+# build step directly so the fixture is language-agnostic. That
+# keeps the deploy path isolated from Go / Node / etc. toolchain
+# availability; the only thing the harness needs is bash + the stub
+# railway on PATH.
+[tasks.build]
+run = "echo built-locally"
+
+# Stub `railway` script on PATH simulates real railway output and
+# reads `.railway-fail` in cwd to decide exit code.
+[integrations.railway]
+service = "backend"

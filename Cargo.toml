@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bento-cli",
+    "crates/bento-core",
+    "crates/bento-config",
+    "crates/bento-cache",
+    "crates/bento-adapters",
+    "crates/bento-toolchain",
+    "crates/bento-watch",
+    "crates/bento-cas-protocol",
+    "crates/bento-plugin",
+    "crates/bento-mcp",
+    "examples/bento-adapter-noop",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+authors = ["Disruptor Labs <hello@disruptorlabs.io>"]
+repository = "https://github.com/bento-sh/bento"
+homepage = "https://github.com/bento-sh/bento"
+description = "Polyglot monorepo orchestrator. Cargo-grade speed, Vercel-grade DX."
+readme = "README.md"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
+schemars = "1"
+notify = "6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "process", "io-util", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+blake3 = "1"
+walkdir = "2"
+globset = "0.4"
+tar = "0.4"
+indicatif = "0.17"
+tempfile = "3"
+dirs = "5"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+semver = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+wiremock = "0.6"
+flate2 = "1"
+sha2 = "0.10"
+base64 = "0.22"
+# object_store gives us S3, Cloudflare R2, MinIO, Backblaze, GCS, Azure
+# Blob, etc. under one async trait. bento-cache wraps it in a small
+# sync `S3Remote` over a dedicated tokio runtime.
+object_store = { version = "0.11", features = ["aws"] }
+bytes = "1"
+futures = "0.3"
+url = "2"
+# Cross-platform OS keychain. Used by `bento login` to stash the cache
+# JWT in Keychain (macOS), kernel keyutils (Linux), or Credential
+# Manager (Windows). Falls back to a 0600 file under
+# ~/.bento/credentials when no keyring backend is available.
+#
+# Linux uses keyutils only (kernel keyring) — NOT secret-service. The
+# combo features (`linux-native-{sync,async}-persistent`) pull
+# `dbus-secret-service`, which adds a `libdbus-1.so` runtime dep + a
+# `libdbus-1-dev` build-time dep that breaks cross-compile to aarch64.
+# The file fallback covers desktop-Linux users who were relying on
+# GNOME Keyring / KWallet — they lose the GUI keychain integration but
+# the JWT still lands somewhere safe (~/.bento/credentials, 0600).
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
+
+# Internal crates (workspace-relative)
+bento-core = { path = "crates/bento-core", version = "0.1.0" }
+bento-config = { path = "crates/bento-config", version = "0.1.0" }
+bento-cache = { path = "crates/bento-cache", version = "0.1.0" }
+bento-adapters = { path = "crates/bento-adapters", version = "0.1.0" }
+bento-toolchain = { path = "crates/bento-toolchain", version = "0.1.0" }
+bento-watch = { path = "crates/bento-watch", version = "0.1.0" }
+bento-cas-protocol = { path = "crates/bento-cas-protocol", version = "0.1.0" }
+bento-plugin = { path = "crates/bento-plugin", version = "0.1.0" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+debug = 1

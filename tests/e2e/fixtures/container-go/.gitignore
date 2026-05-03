@@ -1,0 +1,5 @@
+# Tests materialise this fixture into a tempdir, so build artefacts
+# should never land here — but if someone runs `bento build` directly
+# inside the fixture source while iterating, protect the repo.
+app/app
+app/.cache/

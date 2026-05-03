@@ -1,0 +1,9 @@
+{
+  "name": "@migrate-lerna/utils",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint ."
+  }
+}

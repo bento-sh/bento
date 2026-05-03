@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stub Gradle wrapper for the bento e2e harness. Real projects ship
+# a gradlew that pins a Gradle distribution under `gradle/wrapper/`;
+# the fixture can't ship that without bundling a ~100 MB zip, so we
+# just forward to the system `gradle` binary. CI installs gradle via
+# gradle/actions/setup-gradle@v4 before the test; local dev without
+# gradle installed hits require_toolchain("gradle") and skips the
+# whole suite before reaching here.
+exec gradle "$@"

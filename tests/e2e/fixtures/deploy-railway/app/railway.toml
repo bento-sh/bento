@@ -1,0 +1,3 @@
+# Empty marker file so RailwayIntegration::detect() matches this dish.
+# Real railway projects use this to pin service config; bento just
+# treats the file's presence as the opt-in signal.

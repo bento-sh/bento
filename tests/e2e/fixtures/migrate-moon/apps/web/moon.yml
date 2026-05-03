@@ -1,0 +1,15 @@
+language: typescript
+
+tasks:
+  build:
+    command: vite build
+    inputs:
+      - "src/**/*"
+    outputs:
+      - "dist/**"
+  test:
+    command: vitest run
+  dev:
+    command: vite
+    options:
+      cache: false

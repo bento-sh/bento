@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel in-flight runs for the same ref when a new push lands —
+# saves runner minutes on rapid iteration. Tag pushes are scoped
+# by `${{ github.ref }}` so they get their own concurrency group;
+# only ref-on-ref pushes interrupt their predecessor.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Stable is the only supported channel; MSRV is enforced by
+        # rust-toolchain.toml. Add nightly here later if any nightly-
+        # only checks are wanted.
+        toolchain: [stable]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-test
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      # `cargo test --workspace` builds each package's lib + tests but
+      # NOT cross-package bins. plugin_e2e.rs needs the noop binary at
+      # target/debug/bento-adapter-noop; build it (and everything else)
+      # explicitly first.
+      - name: cargo build (workspace, primes bin fixtures for tests)
+        run: cargo build --workspace --locked
+
+      # --test-threads=1 sidesteps a parallel-subprocess-spawn race in
+      # plugin_e2e.rs: 10 tests each spawn a copy of bento-adapter-noop
+      # for handshake; under shared CI runner load occasional spawns
+      # slip past the per-test handshake window. Serialising costs a
+      # few seconds total since every individual test finishes in
+      # <100ms; well worth eliminating the flake.
+      - name: cargo test
+        run: cargo test --workspace --locked -- --test-threads=1
+
+  # Linux cross-build sanity. Runs on every push to main + every PR.
+  # Cheap (1× ubuntu multiplier) so always-on is fine.
+  build-linux:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-build-${{ matrix.target }}
+
+      - name: Install cross (linux-aarch64 only)
+        if: matrix.cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Build bento for ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} -p bento-cli
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p bento-cli
+          fi
+
+  # macOS cross-build sanity. Runs ONLY on PRs (10× minute multiplier
+  # makes per-main-push macos jobs prohibitively expensive). Branch
+  # protection + required-checks gate ensures every commit reaching main
+  # has had macos green on its PR, so skipping macos on push-to-main
+  # doesn't widen the regression-catch window in practice. Tag-push
+  # release.yml still rebuilds macos from scratch as the actual artifact.
+  build-macos:
+    name: build ${{ matrix.target }} (macos)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-build-${{ matrix.target }}
+
+      - name: Build bento for ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} -p bento-cli
+
+  noop-plugin:
+    # Explicit so the badge can't go green while the plugin e2e
+    # fixture has rotted. The build job above already covers
+    # bento-cli; this guarantees the example plugin still compiles.
+    name: build noop plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-noop-plugin
+      - run: cargo build --release --locked -p bento-adapter-noop

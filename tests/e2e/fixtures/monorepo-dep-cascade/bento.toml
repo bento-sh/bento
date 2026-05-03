@@ -1,0 +1,5 @@
+# Dep-graph cascade fixture. `a` declares a dep on `b`; bento's
+# pessimistic cascade folds `b`'s content signature into every task
+# key on `a`, so mutating `b/` invalidates `a`'s cache. Flipping
+# `force_independent = true` on `a` breaks the cascade — that's the
+# documented foot-gun and the second half of this test.

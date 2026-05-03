@@ -1,0 +1,12 @@
+[project]
+name = "python-hello"
+version = "0.1.0"
+description = "tiny python fixture for the bento e2e harness"
+requires-python = ">=3.9"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

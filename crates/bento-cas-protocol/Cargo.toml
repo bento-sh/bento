@@ -1,0 +1,15 @@
+[package]
+name = "bento-cas-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "bento content-addressable store wire protocol (shared types for self-hosted and hosted caches)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+schemars.workspace = true

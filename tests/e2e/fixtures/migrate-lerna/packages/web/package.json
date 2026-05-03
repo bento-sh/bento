@@ -1,0 +1,8 @@
+{
+  "name": "@migrate-lerna/web",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "next build",
+    "test": "jest"
+  }
+}

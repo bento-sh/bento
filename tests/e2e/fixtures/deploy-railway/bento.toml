@@ -1,0 +1,5 @@
+# Railway deploy e2e fixture. The stub `railway` script under
+# tests/e2e/bin/ gets prepended to PATH by the test harness, so
+# every `railway up --ci` call routes to it instead of hitting real
+# Railway. Tests flip behaviour by touching/removing the sentinel
+# `.railway-fail` file inside the materialised fixture copy.

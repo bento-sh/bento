@@ -1,0 +1,42 @@
+[package]
+name = "bento-cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "bento content-addressable store and multi-tier cache"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+walkdir.workspace = true
+tracing.workspace = true
+globset.workspace = true
+tar.workspace = true
+bento-cas-protocol.workspace = true
+# S3-compatible remote cache. object_store handles SigV4 + AWS/R2/MinIO/
+# GCS/Azure quirks so we don't.
+object_store.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+url.workspace = true
+# Bearer-auth remote cache (bento:// scheme) uses plain HTTPS; no SigV4
+# dance, so reqwest is cheaper than dragging object_store for it.
+reqwest.workspace = true
+# OS keychain + HOME resolution for the `bento login` token path.
+# Read-side of the resolver (env → keychain → file fallback) lives
+# alongside the bearer remote that consumes the token.
+keyring.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

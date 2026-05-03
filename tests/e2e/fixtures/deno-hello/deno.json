@@ -1,0 +1,7 @@
+{
+  "name": "@bento/deno-hello",
+  "version": "0.1.0",
+  "tasks": {
+    "build": "deno check main.ts"
+  }
+}

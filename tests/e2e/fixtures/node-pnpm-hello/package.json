@@ -1,0 +1,11 @@
+{
+  "name": "node-pnpm-hello",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny pnpm fixture for the bento e2e harness.",
+  "scripts": {
+    "build": "node -e \"console.log('built')\"",
+    "test": "node -e \"console.log('test ok')\"",
+    "lint": "node -e \"console.log('lint ok')\""
+  }
+}

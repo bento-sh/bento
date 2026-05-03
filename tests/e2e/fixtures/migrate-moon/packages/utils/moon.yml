@@ -1,0 +1,9 @@
+language: typescript
+
+tasks:
+  build:
+    command: tsc
+    outputs:
+      - "dist/**"
+  test:
+    command: jest

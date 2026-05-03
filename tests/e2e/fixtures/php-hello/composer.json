@@ -1,0 +1,7 @@
+{
+  "name": "bento/php-hello",
+  "description": "Tiny PHP fixture for the bento e2e harness.",
+  "type": "project",
+  "license": "MIT",
+  "require": {}
+}

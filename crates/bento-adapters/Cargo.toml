@@ -1,0 +1,27 @@
+[package]
+name = "bento-adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "bento language adapters (Go, Node {npm,pnpm,yarn}, Bun, Deno, Cargo)"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+tracing.workspace = true
+bento-plugin.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Reference subprocess plugin used by tests/plugin_e2e.rs. The dev-dep
+# entry exists so `cargo test -p bento-adapters` builds the binary before
+# the integration tests run; we don't actually link against it.
+bento-adapter-noop = { path = "../../examples/bento-adapter-noop", version = "0.1.0" }

@@ -1,0 +1,13 @@
+# Moonrepo workspace config — fixture for `bento migrate moon`.
+# Discover projects via globs across two roots.
+projects:
+  - "apps/*"
+  - "packages/*"
+
+vcs:
+  manager: git
+
+# Toolchain blocks below are ignored by the migrator and surfaced as
+# Inferred notes pointing the user at bento.toml's [toolchain] block.
+node:
+  version: "20.11.0"

@@ -1,0 +1,36 @@
+[package]
+name = "bento-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "bento core engine: graph, planner, executor"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+schemars.workspace = true
+walkdir.workspace = true
+globset.workspace = true
+blake3.workspace = true
+dirs.workspace = true
+bento-config.workspace = true
+bento-cache.workspace = true
+bento-cas-protocol.workspace = true
+bento-adapters.workspace = true
+bento-toolchain.workspace = true
+
+# `bento doctor --cloud` ping endpoints + decode JWT claims. ureq is the
+# small blocking HTTP client (no async runtime needed for one-shot
+# health probes). base64 decodes the JWT payload's URL-safe segment.
+ureq.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,9 @@
+language: rust
+
+tasks:
+  build:
+    command: cargo build
+    deps:
+      - "^:build"
+  test:
+    command: cargo test

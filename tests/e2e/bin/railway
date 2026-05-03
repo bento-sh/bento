@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Fake `railway` CLI for the bento e2e harness. Accepts the same
+# surface bento's RailwayIntegration emits today (`railway up [--ci]
+# [--service <name>]`) and exits deterministically:
+#
+#   - exits 0 by default
+#   - exits 1 if `.railway-fail` exists in cwd (sentinel file the
+#     test harness writes to flip the outcome)
+#
+# Stdout mimics the shape of real railway output so bento's
+# output_excerpt capture + URL-parsing code paths see realistic
+# content. Kept to a handful of lines on purpose — enough to look
+# real, short enough that diffs are obvious when something breaks.
+set -euo pipefail
+
+if [ "${1:-}" != "up" ]; then
+    echo "fake-railway: unsupported subcommand '${1:-}'" >&2
+    exit 2
+fi
+shift
+
+ci_mode=false
+service=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ci) ci_mode=true; shift ;;
+        --service) service="$2"; shift 2 ;;
+        --detach|-d) shift ;;
+        *) shift ;;
+    esac
+done
+
+echo "Indexing..."
+echo "Uploading..."
+if [ -n "$service" ]; then
+    echo "  Service: $service"
+fi
+echo "Build Logs: https://railway.example/stub-project/deployments/stub-deploy-id"
+if [ "$ci_mode" = true ]; then
+    echo "CI mode enabled"
+fi
+
+if [ -f .railway-fail ]; then
+    echo "" >&2
+    echo "Build failed: stub-sentinel-triggered" >&2
+    exit 1
+fi
+
+echo "Build time: 0.01 seconds"
+echo "Deploy complete"
+exit 0

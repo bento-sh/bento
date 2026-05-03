@@ -1,0 +1,13 @@
+[package]
+name = "monorepo-api"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "monorepo-api"
+path = "src/main.rs"
+
+[lib]
+name = "monorepo_api"
+path = "src/lib.rs"

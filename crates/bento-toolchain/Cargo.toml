@@ -1,0 +1,27 @@
+[package]
+name = "bento-toolchain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "bento embedded toolchain version manager"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+dirs.workspace = true
+ureq.workspace = true
+flate2.workspace = true
+tar.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+tracing.workspace = true
+bento-config.workspace = true
+bento-adapters.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

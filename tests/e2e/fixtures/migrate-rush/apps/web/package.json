@@ -1,0 +1,10 @@
+{
+  "name": "@migrate-rush/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "test": "jest",
+    "lint": "eslint ."
+  }
+}

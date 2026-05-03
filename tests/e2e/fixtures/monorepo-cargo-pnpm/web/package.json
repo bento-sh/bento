@@ -1,0 +1,11 @@
+{
+  "name": "monorepo-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "pnpm frontend half of the bento monorepo-cargo-pnpm e2e fixture.",
+  "scripts": {
+    "build": "node -e \"console.log('built')\"",
+    "test": "node -e \"console.log('test ok')\"",
+    "lint": "node -e \"console.log('lint ok')\""
+  }
+}

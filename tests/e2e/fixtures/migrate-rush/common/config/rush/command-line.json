@@ -1,0 +1,12 @@
+{
+  "commands": [
+    {
+      "commandKind": "bulk",
+      "name": "audit",
+      "summary": "Audit every project for vulnerabilities",
+      "description": "Runs `npm audit` across the workspace.",
+      "shellCommand": "npm audit",
+      "enableParallelism": true
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+name: Bump Homebrew formula
+
+# Fires when a release publishes (after release.yml uploads the tarballs
+# + SHA256SUMS). The job pulls SHA256SUMS, regexes Formula/bento.rb in
+# the bento-sh/homebrew-tap repo with the new version + four checksums,
+# and opens a PR there.
+#
+# Gated by `vars.HOMEBREW_TAP_LIVE` — until the tap repo is public and
+# the HOMEBREW_TAP_TOKEN secret is set, this is a no-op. Flip the var
+# to `true` on launch day.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to bump to (e.g. 0.4.1)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Open formula bump PR
+    runs-on: ubuntu-latest
+    if: ${{ vars.HOMEBREW_TAP_LIVE == 'true' }}
+    steps:
+      - name: Resolve version
+        id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${RELEASE_TAG#v}"
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::could not determine version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          mkdir -p sums
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "SHA256SUMS" \
+            --dir sums
+          cat sums/SHA256SUMS
+
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: bento-sh/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update Formula/bento.rb
+        shell: bash
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          formula="tap/Formula/bento.rb"
+
+          sha_arm_macos=$(awk '$2 ~ /aarch64-apple-darwin\.tar\.gz$/ {print $1}' sums/SHA256SUMS)
+          sha_x64_macos=$(awk '$2 ~ /x86_64-apple-darwin\.tar\.gz$/ {print $1}' sums/SHA256SUMS)
+          sha_arm_linux=$(awk '$2 ~ /aarch64-unknown-linux-gnu\.tar\.gz$/ {print $1}' sums/SHA256SUMS)
+          sha_x64_linux=$(awk '$2 ~ /x86_64-unknown-linux-gnu\.tar\.gz$/ {print $1}' sums/SHA256SUMS)
+
+          for var in sha_arm_macos sha_x64_macos sha_arm_linux sha_x64_linux; do
+              val="${!var}"
+              if [ -z "$val" ]; then
+                  echo "::error::missing checksum for $var in SHA256SUMS"
+                  exit 1
+              fi
+          done
+
+          python3 - "$formula" "$VERSION" \
+                "$sha_arm_macos" "$sha_x64_macos" \
+                "$sha_arm_linux" "$sha_x64_linux" <<'PY'
+          import re
+          import sys
+          path, version, sha_arm_macos, sha_x64_macos, sha_arm_linux, sha_x64_linux = sys.argv[1:]
+          src = open(path).read()
+          src = re.sub(r'version\s+"[^"]+"', f'version "{version}"', src, count=1)
+
+          shas = {
+              "aarch64-apple-darwin": sha_arm_macos,
+              "x86_64-apple-darwin": sha_x64_macos,
+              "aarch64-unknown-linux-gnu": sha_arm_linux,
+              "x86_64-unknown-linux-gnu": sha_x64_linux,
+          }
+          for triple, sha in shas.items():
+              # Replace the sha256 that immediately follows the matching url.
+              pattern = (
+                  r'(url\s+"[^"]+'
+                  + re.escape(triple)
+                  + r'\.tar\.gz"\s*\n\s*sha256\s+")[^"]+(")'
+              )
+              new_src, n = re.subn(pattern, lambda m: m.group(1) + sha + m.group(2), src, count=1)
+              if n == 0:
+                  raise SystemExit(f"failed to update sha256 for {triple}")
+              src = new_src
+
+          open(path, "w").write(src)
+          PY
+
+          echo "--- updated formula ---"
+          cat "$formula"
+
+      - name: Push branch + open PR
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
+        working-directory: tap
+        shell: bash
+        run: |
+          branch="bump/v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add Formula/bento.rb
+          if git diff --cached --quiet; then
+            echo "no formula changes — skipping PR"
+            exit 0
+          fi
+          git commit -m "bento $VERSION"
+          git push origin "$branch" --force-with-lease
+
+          if gh pr view "$branch" >/dev/null 2>&1; then
+            echo "PR already exists — branch was force-pushed, will pick up new diff"
+          else
+            gh pr create \
+              --title "bento $VERSION" \
+              --body "Auto-bumped from [bento-sh/bento@v${VERSION}](https://github.com/bento-sh/bento/releases/tag/v${VERSION})." \
+              --base main \
+              --head "$branch"
+          fi

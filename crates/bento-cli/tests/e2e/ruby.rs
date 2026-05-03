@@ -1,0 +1,35 @@
+//! Ruby ecosystem e2e. `bundle install` contacts rubygems even on a
+//! zero-gem Gemfile (to resolve + freeze Gemfile.lock); `bundle exec
+//! rspec` requires rspec in the bundle. Both gate the build/test
+//! tests behind `require_network`.
+
+use super::common::{standard_suite, EcosystemSpec};
+
+const SPEC: EcosystemSpec = EcosystemSpec {
+    fixture: "ruby-hello",
+    toolchain: "bundle",
+    language_id: "ruby",
+    expected_tasks: &["build", "test", "lint"],
+    build_needs_network: true,
+    test_runs_offline: false,
+};
+
+#[test]
+fn init_and_adopt() {
+    standard_suite::init_and_adopt(&SPEC);
+}
+
+#[test]
+fn plan_reports_expected_tasks() {
+    standard_suite::plan_reports_expected_tasks(&SPEC);
+}
+
+#[test]
+fn build_caches_across_runs() {
+    standard_suite::build_caches_across_runs(&SPEC);
+}
+
+#[test]
+fn test_runs_to_completion() {
+    standard_suite::test_runs_to_completion(&SPEC);
+}

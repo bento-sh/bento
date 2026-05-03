@@ -1,0 +1,10 @@
+{
+  "name": "bun-hello",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny bun fixture for the bento e2e harness.",
+  "scripts": {
+    "build": "bun -e \"console.log('built')\"",
+    "lint": "bun -e \"console.log('lint ok')\""
+  }
+}

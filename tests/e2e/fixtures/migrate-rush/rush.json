@@ -1,0 +1,20 @@
+{
+  // Pinned Rush version for the workspace.
+  "rushVersion": "5.100.0",
+  // Workspaces use pnpm as the package manager.
+  "pnpmVersion": "8.10.0",
+  "projects": [
+    {
+      "packageName": "@migrate-rush/web",
+      "projectFolder": "apps/web",
+      "reviewCategory": "production",
+      "shouldPublish": false
+    },
+    {
+      "packageName": "@migrate-rush/api",
+      "projectFolder": "apps/api",
+      "reviewCategory": "production",
+      "shouldPublish": false
+    }
+  ]
+}

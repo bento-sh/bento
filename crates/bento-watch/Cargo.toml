@@ -1,0 +1,19 @@
+[package]
+name = "bento-watch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "bento file watcher for `bento serve` and `bento dev`"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+notify.workspace = true
+globset.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

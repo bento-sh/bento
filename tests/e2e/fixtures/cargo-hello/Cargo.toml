@@ -1,0 +1,13 @@
+[package]
+name = "cargo-hello"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "cargo-hello"
+path = "src/main.rs"
+
+[lib]
+name = "cargo_hello"
+path = "src/lib.rs"

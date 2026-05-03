@@ -1,0 +1,8 @@
+# Container-mode smoke fixture. `container = "always"` forces every
+# task to run inside the declared image via docker / podman / nerdctl.
+# The image ships Go 1.22 so the dish's `go build ./...` runs without
+# needing Go on the host. Tests gate on `docker` being on PATH so local
+# dev without a runtime skips cleanly.
+[execution]
+container = "always"
+image = "golang:1.22-alpine"

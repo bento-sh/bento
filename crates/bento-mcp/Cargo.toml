@@ -1,0 +1,35 @@
+[package]
+name = "bento-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "MCP (Model Context Protocol) server for bento — exposes the CLI verb surface as typed tools for Claude Desktop, Claude Code, and any other MCP client."
+
+[[bin]]
+name = "bento-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# MCP SDK. `macros` + `server` + `transport-io` is enough to declare
+# tools and speak stdio JSON-RPC.
+rmcp = { version = "1.5", features = ["server", "macros", "transport-io"] }
+
+bento-core.workspace = true
+bento-config.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

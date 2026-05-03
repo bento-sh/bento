@@ -1,0 +1,323 @@
+name: Bento CI
+description: Run a bento (plan + execute with content-hash caching) in GitHub Actions.
+author: Disruptor Labs
+
+branding:
+  icon: box
+  color: orange
+
+inputs:
+  bento:
+    description: Bento name to run (omit to run every bento in the workspace).
+    required: false
+    default: ''
+
+  task:
+    description: >
+      Task to run — one of 'ci' (default), 'build', 'check', 'test',
+      'lint', 'deploy', or 'notify'. The `check` task runs the
+      adapter-native fast type-check (`cargo check --locked
+      --all-targets`, `go vet ./...`, …); useful as a cheap PR gate
+      ahead of the full build. The `deploy` task runs `bento doctor
+      --env <env>` first (preflight) then `bento deploy` with
+      whatever deploy-scoped inputs are set (env / secret-from /
+      preview / rollback). The `notify` task replays Notify-kind
+      integration tasks (Slack posts, Linear flips, …) against the
+      last deploy's cached payload — used to re-send after a broken
+      webhook is fixed without re-deploying the code.
+    required: false
+    default: 'ci'
+
+  target:
+    description: >
+      Bento or dish name passed to build / check / test / lint /
+      deploy (ignored for 'ci'). For `deploy`, omit to run against
+      every dish with a matching integration.
+    required: false
+    default: ''
+
+  env:
+    description: >
+      Named bento environment from `bento.toml`'s
+      `[environments.<name>]`. With `task: deploy`, the profile's
+      `secrets.*` map is applied as declared-var → source-var
+      aliases so tokens can live under any host env-var name
+      (`RAILWAY_TOKEN_STAGING` / `RAILWAY_TOKEN_PROD`) and bento
+      remaps them to what integrations expect (`RAILWAY_TOKEN`).
+      Also drives `bento doctor --env <env>` in preflight.
+      Ignored for non-deploy tasks.
+    required: false
+    default: ''
+
+  secret-from:
+    description: >
+      Newline-separated DECLARED=SOURCE aliases (see `bento deploy
+      --secret-from`). Each non-empty line becomes one `--secret-from`
+      flag. Overrides anything coming from `env`. Intended for
+      ad-hoc deploys where a named profile in bento.toml isn't
+      worth the config churn. Ignored for non-deploy tasks.
+    required: false
+    default: ''
+
+  preview:
+    description: >
+      With `task: deploy`, run preview / staging-style deploys
+      (--preview). Mutually exclusive with `rollback`.
+    required: false
+    default: 'false'
+
+  rollback:
+    description: >
+      With `task: deploy`, roll back to the previous deploy
+      (--rollback). Mutually exclusive with `preview`.
+    required: false
+    default: 'false'
+
+  no-notify:
+    description: >
+      With `task: deploy`, skip the Notify-kind garnish fan-out
+      (--no-notify). Use when re-deploying after a fix and you
+      don't want to re-spam the same Slack / Linear channel.
+      Ignored for non-deploy tasks.
+    required: false
+    default: 'false'
+
+  version:
+    description: >
+      bento version to install (e.g. '0.1.0'). When set, the action downloads
+      the prebuilt binary from GitHub Releases instead of compiling from source
+      — much faster. Omit to fall back to `cargo install` from `source-path`.
+    required: false
+    default: ''
+
+  github-repo:
+    description: >
+      Repo to pull bento releases from. Only used when `version` is set.
+    required: false
+    default: 'bento-sh/bento'
+
+  source-path:
+    description: >
+      Path to a bento Rust workspace (Cargo.toml root). Only consulted when
+      `version` is empty — falls back to `cargo install` from source. Leave
+      blank to force an error if no binary version is pinned.
+    required: false
+    default: ''
+
+  workspace-path:
+    description: >
+      Path to the repo directory that contains `bento.toml` and `bentos/`.
+      Defaults to `$GITHUB_WORKSPACE` (the checkout root).
+    required: false
+    default: ''
+
+  json:
+    description: Emit machine-readable JSON to the step's stdout instead of
+      the human summary. Useful for downstream parsing.
+    required: false
+    default: 'false'
+
+  cache-key-suffix:
+    description: >
+      Extra key component appended to the bento cache key. Bump it to force
+      a cold cache (e.g. after bento version upgrades).
+    required: false
+    default: 'v1'
+
+  install-toolchains:
+    description: >
+      When 'true' (default), runs `bento toolchain install` to fetch every
+      pinned toolchain into ~/.bento/tools/, with an actions/cache@v4
+      wrapping that dir keyed on the workspace's bento.toml + dish.toml +
+      .tool-versions content. Bento's adapters then transparently use the
+      installed versions for every task.
+
+      When 'false', skip both the install step and its cache. Assumes
+      you've set up the right tool versions via actions/setup-* steps
+      before invoking bento, and (typically) that your bento.toml has
+      `[toolchain] use_system = true` so bento doesn't try to install.
+    required: false
+    default: 'true'
+
+outputs:
+  json:
+    description: "Raw JSON report (set only when `json: true`). Same content as `report`; kept for back-compat."
+    value: ${{ steps.execute.outputs.json }}
+
+  report:
+    description: >
+      Full ExecutionReport JSON — task results, cache hit/miss per task,
+      durations, dish-and-task taxonomy. Always set after a bento run,
+      whether `json` is true or not. Same shape as `bento ci --json`;
+      see `bento schema report` for the canonical JSON Schema.
+    value: ${{ steps.execute.outputs.report }}
+
+  artifacts:
+    description: >
+      JSON object `{dish_name: [absolute_paths...]}` listing every file/dir
+      resolved from each dish's `[outputs]` declaration after the run.
+      Pipe to `jq` from a downstream step (Docker build, upload-artifact,
+      release upload, etc.). Empty `{}` if nothing matched.
+    value: ${{ steps.execute.outputs.artifacts }}
+
+  toolchains-installed:
+    description: >
+      JSON listing toolchains installed by the auto-install step. Set only
+      when `install-toolchains: true`. Same shape as
+      `bento toolchain install --json`: `{"installed": [{tool, version,
+      bin_dir, used_by}], "failed": <count>}`.
+    value: ${{ steps.install-toolchains.outputs.json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve workspace path
+      id: resolve
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.workspace-path }}" ]; then
+          path="${{ inputs.workspace-path }}"
+        else
+          path="${GITHUB_WORKSPACE}"
+        fi
+        echo "path=$path" >> "$GITHUB_OUTPUT"
+
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.version }}" ] && [ -z "${{ inputs.source-path }}" ]; then
+          echo "::error::either 'version' (download binary) or 'source-path' (build from source) must be set"
+          exit 1
+        fi
+
+    - name: Install bento from release binary
+      if: inputs.version != ''
+      shell: bash
+      env:
+        BENTO_VERSION: ${{ inputs.version }}
+        BENTO_REPO: ${{ inputs.github-repo }}
+        BENTO_INSTALL_DIR: ${{ runner.temp }}/bento-install/bin
+        # gh CLI picks up GITHUB_TOKEN and handles auth for both
+        # public and private releases without us wrangling API
+        # redirects.
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/scripts/action/run.sh" install-bento
+
+    - name: Install Rust toolchain (stable)
+      if: inputs.version == ''
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Cargo registry, git index, and build
+      if: inputs.version == ''
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ${{ inputs.source-path }}/target
+        key: bento-cargo-${{ runner.os }}-${{ hashFiles(format('{0}/Cargo.lock', inputs.source-path)) }}
+        restore-keys: |
+          bento-cargo-${{ runner.os }}-
+
+    - name: Build bento CLI from source (fallback)
+      if: inputs.version == ''
+      shell: bash
+      working-directory: ${{ inputs.source-path }}
+      run: cargo install --path crates/bento-cli --locked --root "${HOME}/.bento-install"
+
+    - name: Add bento to PATH (source-build path)
+      if: inputs.version == ''
+      shell: bash
+      run: echo "${HOME}/.bento-install/bin" >> "$GITHUB_PATH"
+
+    - name: Restore bento content cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.bento/cache
+        key: bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ github.sha }}
+        restore-keys: |
+          bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-
+
+    # Cache the package managers' OWN global download caches. This is
+    # what speeds up cache misses — when bento decides a task needs to
+    # actually run (source changed), the underlying tool (mvn / composer
+    # / npm / cargo / ...) finds its dependencies pre-downloaded.
+    # actions/cache@v4 silently skips non-existent paths, so caching all
+    # of these is free for languages this workspace doesn't use.
+    - name: Restore per-tool dependency caches
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.npm
+          ~/.local/share/pnpm/store
+          ~/.bun/install/cache
+          ~/.cache/deno
+          ~/.cache/pip
+          ~/.cache/uv
+          ~/.cache/composer
+          ~/.m2/repository
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: bento-deps-${{ runner.os }}-${{ hashFiles('**/go.sum', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock', '**/bun.lock', '**/bun.lockb', '**/composer.lock', '**/pom.xml', '**/Cargo.lock', '**/poetry.lock', '**/uv.lock', '**/Gemfile.lock', '**/build.gradle', '**/build.gradle.kts', '**/gradle/libs.versions.toml') }}
+        restore-keys: |
+          bento-deps-${{ runner.os }}-
+
+    - name: Restore toolchain cache
+      if: inputs.install-toolchains == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.bento/tools
+        # Hash every TOML and .tool-versions file in the workspace —
+        # together they capture every place a [toolchain] block or
+        # version pin can live (bento.toml, per-dish dish.toml, asdf/mise
+        # .tool-versions, .ruby-version-style files via .tool-versions
+        # equivalents).
+        key: bento-toolchains-${{ runner.os }}-${{ hashFiles('**/bento.toml', '**/dish.toml', '**/.tool-versions') }}
+        restore-keys: |
+          bento-toolchains-${{ runner.os }}-
+
+    - name: Install pinned toolchains
+      id: install-toolchains
+      if: inputs.install-toolchains == 'true'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.path }}
+      run: bash "${{ github.action_path }}/scripts/action/run.sh" install-toolchains
+
+    # Preflight before a real deploy. Doctor surfaces missing env
+    # vars / CLI binaries / bad config so the failure shape is
+    # "integration.railway.env fail: RAILWAY_TOKEN not set" rather
+    # than a cryptic 401 mid-upload. Only runs for task: deploy —
+    # other tasks don't need the extra roundtrip.
+    - name: Bento doctor (deploy preflight)
+      if: inputs.task == 'deploy'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.path }}
+      env:
+        BENTO_ENV: ${{ inputs.env }}
+        BENTO_SECRET_FROM: ${{ inputs.secret-from }}
+      run: bash "${{ github.action_path }}/scripts/action/run.sh" preflight
+
+    - name: Execute bento
+      id: execute
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.path }}
+      env:
+        # Route inputs through env vars (not direct template
+        # substitution) so injection-shaped inputs can't shell out.
+        BENTO_TASK: ${{ inputs.task }}
+        BENTO_TARGET: ${{ inputs.target }}
+        BENTO_NAME: ${{ inputs.bento }}
+        BENTO_JSON: ${{ inputs.json }}
+        BENTO_ENV: ${{ inputs.env }}
+        BENTO_SECRET_FROM: ${{ inputs.secret-from }}
+        BENTO_PREVIEW: ${{ inputs.preview }}
+        BENTO_ROLLBACK: ${{ inputs.rollback }}
+        BENTO_NO_NOTIFY: ${{ inputs.no-notify }}
+        REPORT_FILE: ${{ runner.temp }}/bento-report.json
+      run: bash "${{ github.action_path }}/scripts/action/run.sh" execute

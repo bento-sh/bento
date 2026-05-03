@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# bento's own local state (when dogfooding or running e2e fixtures)
+.bento/cache/
+.bento/garnish/
+
+# Local task-tracking state. Not shipped with the repo.
+.beads/
+
+# Local-only Claude Code guidance — workflow tooling specific to a
+# clone, kept out of the OSS tree.
+CLAUDE.local.md
+
+# Local design scratchpad — ADR-style planning docs stay local so
+# the repo ships with only user-facing docs + code comments.
+docs/design/

@@ -1,0 +1,8 @@
+[toolchain]
+# Pinned (rather than `channel = "stable"`) so local pre-push gates,
+# CI runners, and release builds all run an identical clippy lint set.
+# Without this, `stable` drifts whenever a new rustc lands and surfaces
+# new lints CI catches but local hasn't picked up yet. Bump deliberately
+# when you want newer language features or a fixed clippy lint.
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
