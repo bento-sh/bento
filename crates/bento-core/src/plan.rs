@@ -388,6 +388,23 @@ pub(crate) fn resolve_tasks(
 ) -> Result<Vec<ResolvedTask>> {
     let mut out: BTreeMap<String, ResolvedTask> = BTreeMap::new();
 
+    // Surface the dish-level `inputs` shadowing footgun before any
+    // tasks are resolved — adapters that ship their own `default.inputs`
+    // silently override anything declared at the dish root, so the user
+    // never sees their globs land in the cache key. See plan.rs tests
+    // `dish_inputs_shadowed_by_adapter_defaults_*` for the resolution
+    // behaviour this warns about.
+    let shadowed = shadowed_dish_inputs(dish, adapter);
+    if !shadowed.is_empty() {
+        tracing::warn!(
+            dish = %dish.name,
+            tasks = ?shadowed,
+            "dish-level `inputs` are silently overridden by adapter defaults for these tasks; \
+             declare `inputs = [...]` under each `[tasks.<name>]` block (or remove the dish-level \
+             `inputs` field) — see docs/configuration.md § [tasks.<name>]"
+        );
+    }
+
     if let Some(a) = adapter {
         for default in a.default_tasks() {
             out.insert(default.name.clone(), resolved_from_default(default, dish));
@@ -556,6 +573,27 @@ pub(crate) fn resolve_integrations<'a>(
         }
     }
     out
+}
+
+/// Names of tasks where dish-level `inputs` are silently shadowed by
+/// adapter-default `inputs`. Empty when `dish.inputs` is empty, when
+/// no adapter is detected, or when no adapter-default task ships its
+/// own `inputs`.
+pub(crate) fn shadowed_dish_inputs(
+    dish: &DishConfig,
+    adapter: Option<&dyn LanguageAdapter>,
+) -> Vec<String> {
+    if dish.inputs.is_empty() {
+        return Vec::new();
+    }
+    let Some(a) = adapter else {
+        return Vec::new();
+    };
+    a.default_tasks()
+        .into_iter()
+        .filter(|d| d.inputs.is_some())
+        .map(|d| d.name)
+        .collect()
 }
 
 fn resolved_from_default(default: DefaultTask, dish: &DishConfig) -> ResolvedTask {
@@ -1744,5 +1782,68 @@ dishes = ["apps/api"]"#,
         // required_env carries over from the synthetic garnish — the
         // override is purely a run/inputs change.
         assert_eq!(t.required_env, vec!["TOKEN"]);
+    }
+
+    #[test]
+    fn shadowed_dish_inputs_lists_adapter_defaults_with_inputs() {
+        // Cargo's adapter ships `inputs` on every default task — so a
+        // dish that writes `inputs = ["openapi.yaml"]` at the root has
+        // every lifecycle task's cache key silently miss the file.
+        let dish = bento_config::DishConfig {
+            name: "ctrl-plane".into(),
+            language: Some("cargo".into()),
+            inputs: vec!["openapi.yaml".into()],
+            ..Default::default()
+        };
+        let adapter = bento_adapters::CargoAdapter;
+        let mut shadowed = shadowed_dish_inputs(&dish, Some(&adapter));
+        shadowed.sort();
+        // Cargo ships build/check/test/lint with inputs.
+        assert_eq!(shadowed, vec!["build", "check", "lint", "test"]);
+    }
+
+    #[test]
+    fn shadowed_dish_inputs_empty_when_dish_inputs_empty() {
+        let dish = bento_config::DishConfig {
+            name: "api".into(),
+            language: Some("cargo".into()),
+            inputs: vec![],
+            ..Default::default()
+        };
+        let adapter = bento_adapters::CargoAdapter;
+        assert!(shadowed_dish_inputs(&dish, Some(&adapter)).is_empty());
+    }
+
+    #[test]
+    fn shadowed_dish_inputs_empty_when_no_adapter() {
+        let dish = bento_config::DishConfig {
+            name: "scripts".into(),
+            inputs: vec!["src/**".into()],
+            ..Default::default()
+        };
+        assert!(shadowed_dish_inputs(&dish, None).is_empty());
+    }
+
+    #[test]
+    fn dish_inputs_silently_dropped_for_adapter_default_tasks() {
+        // Regression coverage for the footgun the warn surfaces:
+        // dish.inputs = ["openapi.yaml"] does NOT land in cargo build's
+        // resolved inputs, even though the docs once promised it would.
+        let dish = bento_config::DishConfig {
+            name: "ctrl-plane".into(),
+            language: Some("cargo".into()),
+            inputs: vec!["openapi.yaml".into()],
+            ..Default::default()
+        };
+        let adapter = bento_adapters::CargoAdapter;
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_tasks(tmp.path(), &dish, Some(&adapter), &[]).unwrap();
+        let build = resolved.iter().find(|t| t.name == "build").unwrap();
+        assert!(
+            !build.inputs.iter().any(|g| g == "openapi.yaml"),
+            "dish-level `openapi.yaml` unexpectedly landed in cargo build inputs — \
+             behaviour changed; update warn + docs to match. inputs={:?}",
+            build.inputs
+        );
     }
 }

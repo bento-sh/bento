@@ -209,10 +209,13 @@ One file per dish, in the dish's directory (which is also the working directory 
 name = "api"
 language = "go"
 
-# Files outside any task's [inputs] that should still invalidate the
-# cache when they change. Adapters add their own fingerprint files
-# automatically (lockfiles, toolchain pin files, .tool-versions, ...).
-inputs = ["openapi.yaml"]
+# Glob patterns mixed into the cache key for *custom* tasks only
+# (e.g. `migrate`, `seed`). Lifecycle tasks (build/test/lint, plus
+# check on cargo + go) ignore this field — they use the adapter's
+# defaults. For those, restate the glob under each [tasks.<name>]
+# block. Adapters add their own fingerprint files automatically
+# (lockfiles, toolchain pin files, .tool-versions, ...).
+inputs = []
 
 # Build artefacts. Globs allowed. Used by `bento artifacts` and by the
 # GHA action's `artifacts` output.
@@ -238,11 +241,14 @@ go = "1.22.5"
 # declare a [tasks.<name>] block here to override or add.
 [tasks.build]
 run = "go build -o bin/api ./cmd/api"
-inputs = ["**/*.go", "go.mod", "go.sum"]
+# Replaces the adapter default verbatim — restate every glob you want
+# in this task's cache key, including any extras (e.g. openapi.yaml).
+inputs = ["**/*.go", "go.mod", "go.sum", "openapi.yaml"]
 outputs = ["bin/api"]
 
 [tasks.test]
 run = "go test ./..."
+inputs = ["**/*.go", "go.mod", "go.sum", "openapi.yaml", "testdata/**"]
 env = ["DATABASE_URL", "REDIS_URL"]
 retry = 1                              # 1 retry → up to 2 attempts
 
@@ -261,7 +267,7 @@ run = "air"
 | `name` | string | required | Dish handle. Used by CLI flags (`bento build <name>`) and bentos' `dishes` list. Must be unique across the workspace. |
 | `language` | string | adapter-detected | Adapter id (`go`, `cargo`, `python`, `python-uv`, `ruby`, `php`, `maven`, `gradle`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`, `deno`, or any plugin's id). When omitted, bento auto-detects from the dish dir. |
 | `package_manager` | string | unset | Reserved for future use; no behaviour today. |
-| `inputs` | `string[]` | `[]` | Glob patterns relative to the dish dir. Files matching are mixed into the cache key for **every** task in the dish. Adapters add their own fingerprint files automatically (lockfiles, toolchain pin files, `.tool-versions`). |
+| `inputs` | `string[]` | `[]` | Glob patterns relative to the dish dir, mixed into the cache key only for **custom tasks** (task names outside the adapter's lifecycle set — `build` / `test` / `lint`, plus `check` on cargo + go). Lifecycle tasks use the adapter's default `inputs` and **silently ignore** anything declared here; for those, declare `inputs` under `[tasks.<name>]` instead (see below). Adapters add their own fingerprint files automatically (lockfiles, toolchain pin files, `.tool-versions`). Bento emits a `tracing::warn!` at plan time when a non-empty dish-level `inputs` is shadowed. |
 | `outputs` | `string[]` | `[]` | Glob patterns of build artefacts. Listed by `bento artifacts` and the GHA `artifacts` output. |
 | `depends_on` | `string[]` | `[]` | Other dish names this dish depends on. Builds upstream first. Changes upstream invalidate this dish (unless `force_independent`). |
 | `force_independent` | bool | `false` | Opt out of the pessimistic cascade — only this dish's own inputs go into its cache key. |
@@ -282,7 +288,7 @@ Custom-named tasks (anything outside the adapter's lifecycle set) don't get pull
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `run` | string | required | Shell command. Runs from the dish dir, with the dish's `[toolchain]` honoured. |
-| `inputs` | `string[]` | adapter default | Glob patterns mixed into the cache key for **this task only**. Combined with the dish's `inputs`. Omit to use the adapter's default for the language. |
+| `inputs` | `string[]` | adapter default | Glob patterns mixed into the cache key for **this task only**. **Replaces** (does not merge with) the adapter's default `inputs` — restate the adapter globs you still want (e.g. `src/**`, lockfile) plus your additions. Omit to use the adapter's default verbatim. The dish-level `inputs` field is not folded in here either; if you want a glob in every lifecycle task, repeat it under each `[tasks.<name>]`. |
 | `outputs` | `string[]` | none | Glob patterns of artefacts produced by this task. Combined with the dish's `outputs` for `bento artifacts`. |
 | `env` | `string[]` | `[]` | Names of env vars whose **values** should mix into the cache key. The names are visible (in `bento why`); the values are hashed only. |
 | `retry` | int | `0` | Additional attempts on failure. `retry = 2` → up to 3 attempts. A task that succeeds on attempt > 1 is reported `flaky: true` in the execution report. |

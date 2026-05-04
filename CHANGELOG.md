@@ -5,6 +5,12 @@ All notable changes to bento will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`bento plan` warns when dish-level `inputs` is silently shadowed.** Adapters that ship their own `default.inputs` (cargo, go, node-{npm,pnpm,yarn}, bun, ruby, maven) override anything declared at the dish-root `inputs = [...]` field for lifecycle tasks (build/test/lint, plus check on cargo + go). The resolution behaviour itself is unchanged; bento now emits a `tracing::warn!` listing the affected tasks at plan time so users see the dropped globs instead of hitting silent cache-key drift. `docs/configuration.md` corrected to match — dish-level `inputs` only feeds custom (non-lifecycle) tasks; restate every glob you want under `[tasks.<name>] inputs = [...]` for lifecycle tasks.
+
 ## [0.1.0] - 2026-05-03
 
 Initial public release.
