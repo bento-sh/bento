@@ -118,16 +118,17 @@ jobs:
             echo "::error::no report output from action — execute step did not publish" >&2
             exit 1
           fi
-          # Sanity-check shape: every dish from the prod bento should
-          # appear in the report's bentos[].dishes[]. Failure = the
-          # action wrapper dropped the report somewhere.
-          for dish in backend frontend; do
-            if ! printf '%s' "$REPORT" | grep -q "\"name\":\"$dish\""; then
-              echo "::error::report missing dish '$dish'" >&2
-              printf '%s\n' "$REPORT" >&2
-              exit 1
-            fi
-          done
+          # Sanity-check shape via jq (universal on GitHub runners) so
+          # the test isn't fooled by `bento ci --json`'s pretty-printing
+          # vs minification — `grep '"name":"backend"'` would miss the
+          # `"name": "backend"` (with space) that pretty-print produces.
+          got="$(printf '%s' "$REPORT" | jq -r '[.bentos[].dishes[].name] | sort | join(",")')"
+          want="backend,frontend"
+          if [ "$got" != "$want" ]; then
+            echo "::error::report dishes mismatch — got '$got', want '$want'" >&2
+            printf '%s\n' "$REPORT" >&2
+            exit 1
+          fi
           echo "report contains backend + frontend ✓"
 
   smoke-source:
