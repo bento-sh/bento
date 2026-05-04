@@ -24,4 +24,4 @@ tempfile.workspace = true
 # Reference subprocess plugin used by tests/plugin_e2e.rs. The dev-dep
 # entry exists so `cargo test -p bento-adapters` builds the binary before
 # the integration tests run; we don't actually link against it.
-bento-adapter-noop = { path = "../../examples/bento-adapter-noop", version = "0.1.0" }
+bento-adapter-noop = { path = "../../examples/bento-adapter-noop", version = "0.1.1" }

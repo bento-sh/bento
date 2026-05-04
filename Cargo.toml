@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -74,14 +74,14 @@ url = "2"
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 
 # Internal crates (workspace-relative)
-bento-core = { path = "crates/bento-core", version = "0.1.0" }
-bento-config = { path = "crates/bento-config", version = "0.1.0" }
-bento-cache = { path = "crates/bento-cache", version = "0.1.0" }
-bento-adapters = { path = "crates/bento-adapters", version = "0.1.0" }
-bento-toolchain = { path = "crates/bento-toolchain", version = "0.1.0" }
-bento-watch = { path = "crates/bento-watch", version = "0.1.0" }
-bento-cas-protocol = { path = "crates/bento-cas-protocol", version = "0.1.0" }
-bento-plugin = { path = "crates/bento-plugin", version = "0.1.0" }
+bento-core = { path = "crates/bento-core", version = "0.1.1" }
+bento-config = { path = "crates/bento-config", version = "0.1.1" }
+bento-cache = { path = "crates/bento-cache", version = "0.1.1" }
+bento-adapters = { path = "crates/bento-adapters", version = "0.1.1" }
+bento-toolchain = { path = "crates/bento-toolchain", version = "0.1.1" }
+bento-watch = { path = "crates/bento-watch", version = "0.1.1" }
+bento-cas-protocol = { path = "crates/bento-cas-protocol", version = "0.1.1" }
+bento-plugin = { path = "crates/bento-plugin", version = "0.1.1" }
 
 [profile.release]
 lto = "thin"
