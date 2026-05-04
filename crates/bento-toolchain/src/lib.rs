@@ -18,6 +18,7 @@ mod resolver;
 mod store;
 mod target;
 mod tool;
+mod uv;
 
 pub use go::GoTool;
 pub use installer::Installer;
@@ -26,4 +27,5 @@ pub use python::PythonTool;
 pub use resolver::{Resolution, ResolutionSource, Resolver};
 pub use store::Store;
 pub use target::{Arch, Os, Target};
-pub use tool::{ArchiveFormat, ChecksumFormat, DownloadSpec, Tool};
+pub use tool::{ArchiveFormat, ChecksumFormat, CoRequired, DownloadSpec, Tool};
+pub use uv::UvTool;

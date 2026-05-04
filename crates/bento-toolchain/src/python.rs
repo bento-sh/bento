@@ -18,9 +18,20 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use crate::target::Target;
-use crate::tool::{ArchiveFormat, ChecksumFormat, DownloadSpec, Tool};
+use crate::tool::{ArchiveFormat, ChecksumFormat, CoRequired, DownloadSpec, Tool};
 
 pub struct PythonTool;
+
+/// Default uv version to install when the workspace doesn't pin one.
+/// Bumped on the bento release cadence — keep recent enough that
+/// `uv python install <pin>` understands the user's Python pin. Users
+/// override via `[toolchain] uv = "..."`.
+const DEFAULT_UV_VERSION: &str = "0.5.0";
+
+const PYTHON_CO_REQUIRED: &[CoRequired] = &[CoRequired {
+    tool: "uv",
+    default_version: DEFAULT_UV_VERSION,
+}];
 
 impl Tool for PythonTool {
     fn name(&self) -> &'static str {
@@ -29,6 +40,13 @@ impl Tool for PythonTool {
 
     fn is_delegated(&self) -> bool {
         true
+    }
+
+    fn co_required(&self) -> &'static [CoRequired] {
+        // Python is delegated to `uv python install`; the install loop
+        // schedules uv ahead of python so its bin dir is on PATH by
+        // the time `delegated_ensure` runs.
+        PYTHON_CO_REQUIRED
     }
 
     fn delegated_ensure(&self, version: &str, _target: Target) -> Result<PathBuf> {

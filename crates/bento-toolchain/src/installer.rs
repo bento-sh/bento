@@ -30,8 +30,10 @@ impl Installer {
         Self { store, tools }
     }
 
-    /// Built-in installer with the supported toolchains: Go, Node, and
-    /// Python (the latter delegated to `uv python install`).
+    /// Built-in installer with the supported toolchains: Go, Node,
+    /// Python (delegated to `uv python install`), and uv itself
+    /// (which Python declares co-required so the install loop lays it
+    /// down before Python runs).
     pub fn builtin() -> Result<Self> {
         let store = Store::new(Store::default_root()?);
         Ok(Self::new(
@@ -40,6 +42,7 @@ impl Installer {
                 Box::new(crate::go::GoTool),
                 Box::new(crate::node::NodeTool),
                 Box::new(crate::python::PythonTool),
+                Box::new(crate::uv::UvTool),
             ],
         ))
     }
@@ -128,6 +131,12 @@ impl Installer {
                     final_root.display()
                 );
             }
+
+            // Tools with non-standard archive layouts (binary at wrapper
+            // root rather than wrapper/bin/) restructure the tree here
+            // so `<install>/bin/<binary>` lands as expected downstream.
+            tool.post_extract(&final_root, version, target)
+                .with_context(|| format!("post-extract for {tool_name}@{version}"))?;
 
             self.store.commit_stage(&final_root, tool_name, version)?;
             Ok(())

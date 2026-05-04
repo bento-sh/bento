@@ -1376,6 +1376,34 @@ impl Executor {
             }
         };
 
+        // Co-required tools install first so the primary's
+        // `delegated_ensure` (e.g. python → uv) finds its sibling on
+        // PATH. Their bin dirs are also returned to the caller so the
+        // task subprocess sees them — a python task running `uv sync`
+        // needs `uv` discoverable just like it needs `python`.
+        let mut paths: Vec<PathBuf> = Vec::new();
+        if let Some(primary) = installer.tool(&resolution.tool) {
+            for co in primary.co_required() {
+                let co_version = self
+                    .workspace
+                    .repo
+                    .toolchain
+                    .pins
+                    .get(co.tool)
+                    .cloned()
+                    .unwrap_or_else(|| co.default_version.to_string());
+                let co_bin = installer
+                    .ensure(co.tool, &co_version, target)
+                    .with_context(|| {
+                        format!(
+                            "installing co-required toolchain {}@{} (for {})",
+                            co.tool, co_version, resolution.tool
+                        )
+                    })?;
+                paths.push(co_bin);
+            }
+        }
+
         let bin_dir = installer
             .ensure(&resolution.tool, version, target)
             .with_context(|| {
@@ -1386,7 +1414,8 @@ impl Executor {
                     resolution.source.label()
                 )
             })?;
-        Ok(vec![bin_dir])
+        paths.push(bin_dir);
+        Ok(paths)
     }
 
     /// `bento notify` entry point — replays persisted garnish payloads

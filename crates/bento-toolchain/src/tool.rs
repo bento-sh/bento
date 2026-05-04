@@ -47,10 +47,37 @@ pub struct DownloadSpec {
     pub format: ArchiveFormat,
 }
 
+/// One tool that must be installed alongside another for the primary
+/// to function. E.g. [`crate::PythonTool`] declares `uv` co-required
+/// because its `delegated_ensure` shells out to `uv python install`.
+///
+/// Co-required tools are resolved through the same `[toolchain]` pin
+/// chain as the primary (dish-level overrides repo-level), and fall
+/// back to `default_version` when the user hasn't pinned them.
+#[derive(Debug, Clone, Copy)]
+pub struct CoRequired {
+    /// Name of the co-required tool — must match a registered
+    /// [`Tool::name`].
+    pub tool: &'static str,
+    /// Version to install when the workspace's `[toolchain]` block
+    /// doesn't pin one. Bumped when the bento release train wants a
+    /// newer baseline.
+    pub default_version: &'static str,
+}
+
 pub trait Tool: Send + Sync {
     /// Stable identifier — the key used in `[toolchain]` blocks.
     /// Examples: `"go"`, `"node"`, `"python"`.
     fn name(&self) -> &'static str;
+
+    /// Tools that must be installed alongside this one. Each is fed
+    /// through the same install pipeline as a primary tool, but is
+    /// scheduled *before* this tool so its bin dir is on `PATH` by
+    /// the time this tool's [`Self::delegated_ensure`] /
+    /// [`Self::download_spec`] runs. The default is empty.
+    fn co_required(&self) -> &'static [CoRequired] {
+        &[]
+    }
 
     /// Turn a user- or adapter-supplied version spec into a concrete
     /// `major.minor.patch` string suitable for [`Self::download_spec`].
@@ -105,4 +132,21 @@ pub trait Tool: Send + Sync {
     ///
     /// Return `None` when the archive contents already sit at the root.
     fn extracted_wrapper_dir(&self, version: &str, target: Target) -> Option<String>;
+
+    /// Optional post-extract hook. Runs against the dir that's about
+    /// to be promoted to the canonical install location (i.e. the
+    /// final root after [`Self::extracted_wrapper_dir`] stripping).
+    /// The hook can rearrange the tree to satisfy the store's
+    /// `<install_dir>/bin/<binary>` layout invariant.
+    ///
+    /// Used by tools whose upstream archive puts binaries at the
+    /// wrapper-dir root (uv ships `uv-<triple>/uv` + `uv-<triple>/uvx`,
+    /// no `bin/` subdir) — the hook synthesises a `bin/` and moves the
+    /// binaries into it.
+    ///
+    /// Default: no-op.
+    fn post_extract(&self, root: &std::path::Path, version: &str, target: Target) -> Result<()> {
+        let _ = (root, version, target);
+        Ok(())
+    }
 }

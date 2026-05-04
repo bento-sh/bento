@@ -47,4 +47,6 @@ pub use bento_cache::{
     S3Remote,
 };
 pub use bento_config::{LoadedDish, Workspace};
-pub use bento_toolchain::{Installer, Resolution, ResolutionSource, Resolver, Store, Target};
+pub use bento_toolchain::{
+    CoRequired, Installer, Resolution, ResolutionSource, Resolver, Store, Target, Tool,
+};
