@@ -154,7 +154,14 @@ impl Resolver {
 fn primary_tool_name(adapter: &dyn LanguageAdapter) -> String {
     match adapter.id() {
         "go" => "go".to_string(),
-        "node-npm" | "node-pnpm" | "node-yarn" | "bun" | "deno" => "node".to_string(),
+        // npm / pnpm / yarn all run on Node — share one toolchain pin.
+        "node-npm" | "node-pnpm" | "node-yarn" => "node".to_string(),
+        // Bun and Deno are independently versioned runtimes — they have
+        // their own pins. (The bun adapter still falls back to a Node
+        // pin when `.bun-version` is absent, but that's per-dish via
+        // `required_toolchain`, not a primary-tool collapse.)
+        "bun" => "bun".to_string(),
+        "deno" => "deno".to_string(),
         // Both python adapters share one toolchain — uv-managed Python
         // works for either pip-based or uv-based dishes.
         "python" | "python-uv" => "python".to_string(),
@@ -349,6 +356,41 @@ mod tests {
             .unwrap();
         assert_eq!(r.tool, "node");
         assert_eq!(r.version.as_deref(), Some("22.1.0"));
+        assert_eq!(r.source, ResolutionSource::Repo);
+    }
+
+    #[test]
+    fn bun_adapter_resolves_bun_pin_not_node_pin() {
+        // Regression: the bun adapter used to share node's pin slot, so
+        // a `[toolchain] bun = "1.3.12"` repo pin was silently shadowed
+        // by the node pin and never reached the installer.
+        let dish = DishConfig::default();
+        let repo = make_repo_with(&[("node", "20.20.0"), ("bun", "1.3.12")], false);
+        let adapter = StubAdapter {
+            id: "bun",
+            from_project: None,
+        };
+        let r = Resolver::resolve(&PathBuf::from("."), &dish, &repo, &adapter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.tool, "bun");
+        assert_eq!(r.version.as_deref(), Some("1.3.12"));
+        assert_eq!(r.source, ResolutionSource::Repo);
+    }
+
+    #[test]
+    fn deno_adapter_resolves_deno_pin_not_node_pin() {
+        let dish = DishConfig::default();
+        let repo = make_repo_with(&[("node", "20.20.0"), ("deno", "1.46.0")], false);
+        let adapter = StubAdapter {
+            id: "deno",
+            from_project: None,
+        };
+        let r = Resolver::resolve(&PathBuf::from("."), &dish, &repo, &adapter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.tool, "deno");
+        assert_eq!(r.version.as_deref(), Some("1.46.0"));
         assert_eq!(r.source, ResolutionSource::Repo);
     }
 
