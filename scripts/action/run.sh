@@ -152,6 +152,14 @@ phase_install_bento() {
 }
 
 phase_install_toolchains() {
+    # bento-toolchain has built-in installers for Go, Node, Python
+    # (delegated to `uv python install`), and uv itself (declared
+    # co-required by the python tool, so a `[toolchain] python = "..."`
+    # pin lays uv down first automatically). Bun and Deno don't have
+    # built-in installers yet — we bootstrap those from their upstream
+    # install scripts when the workspace pins them.
+    bootstrap_external_toolchains
+
     # Capture stdout + exit code so we can publish the JSON output
     # even on partial failure, then propagate the failure upstream.
     local install_exit=0 json
@@ -159,6 +167,66 @@ phase_install_toolchains() {
     printf '%s\n' "$json"
     publish_output "json" "$json"
     exit "$install_exit"
+}
+
+# Read a `<key> = "<value>"` line out of bento.toml's `[toolchain]`
+# block. Echoes the value (no quotes) or nothing if absent. Tolerates
+# whitespace; ignores commented-out lines. Pure bash so it works on
+# both Linux + macOS runners (no GNU-awk dependency).
+read_toolchain_pin() {
+    local key="$1"
+    local file="bento.toml"
+    [ -f "$file" ] || return 0
+
+    local in_block=0 line
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*\[toolchain\][[:space:]]*$ ]]; then
+            in_block=1
+            continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]*\[ ]]; then
+            in_block=0
+            continue
+        fi
+        [ "$in_block" -eq 1 ] || continue
+        # Skip commented lines (anywhere a # appears with only whitespace
+        # before it, the line is a comment).
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"([^\"]*)\" ]]; then
+            printf '%s\n' "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done < "$file"
+}
+
+bootstrap_external_toolchains() {
+    # Bento's built-in installer covers go, node, python, and uv. Bun
+    # and Deno fall through to upstream install scripts for now —
+    # tracked separately for proper BunTool / DenoTool support in
+    # bento-toolchain (needs zip-archive support).
+    local bun_version
+    bun_version="$(read_toolchain_pin bun || true)"
+
+    if [ -n "$bun_version" ]; then
+        if ! command -v bun >/dev/null 2>&1; then
+            install_bun "$bun_version"
+        fi
+    fi
+}
+
+install_bun() {
+    local version="$1"
+    local install_dir="${HOME}/.bun"
+
+    echo "==> bootstrapping bun (pinned: $version)"
+    # bun.sh/install respects BUN_INSTALL for the install root and accepts
+    # `bun-v<version>` as the second argument to pin.
+    BUN_INSTALL="$install_dir" \
+        sh -c 'curl -fsSL https://bun.sh/install | bash -s "bun-v'"$version"'"' \
+        >/dev/null
+    echo "$install_dir/bin" >> "$GITHUB_PATH"
+    export PATH="$install_dir/bin:$PATH"
+    "$install_dir/bin/bun" --version
 }
 
 phase_preflight() {

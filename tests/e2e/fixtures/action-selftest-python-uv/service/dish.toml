@@ -1,0 +1,10 @@
+name = "service"
+language = "python"
+
+# Override the python adapter's default `python -m build` (which would
+# need the `build` package installed). The action-selftest only cares
+# that `bento toolchain install` actually delivered python + uv on
+# PATH — printing both versions is enough to prove that.
+[tasks.build]
+run = "uv --version && python --version"
+inputs = ["pyproject.toml"]

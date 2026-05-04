@@ -1,0 +1,15 @@
+# Action-selftest fixture: exercises bento's python+uv toolchain
+# install path on a clean GitHub-Actions runner (no setup-python /
+# setup-uv steps). Pinning `python = "3.12"` here triggers
+# `bento toolchain install` to:
+#
+#   1. install uv (declared co-required by PythonTool — bento
+#      downloads the standalone tarball from astral-sh/uv releases),
+#   2. PATH-prepend uv,
+#   3. delegate to `uv python install 3.12` for the interpreter.
+#
+# Regression target: bento-cloud-pteo, where a clean runner with
+# `install-toolchains: true` (default) only installed node, leaving
+# bun + python + uv missing.
+[toolchain]
+python = "3.12"

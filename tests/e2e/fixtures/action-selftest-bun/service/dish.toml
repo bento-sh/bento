@@ -1,0 +1,9 @@
+name = "service"
+language = "bun"
+
+# Override the default `bun run build` so we don't have to ship a real
+# package.json/script. The action-selftest only needs proof that
+# `bun` landed on PATH after the bootstrap step.
+[tasks.build]
+run = "bun --version"
+inputs = ["package.json"]

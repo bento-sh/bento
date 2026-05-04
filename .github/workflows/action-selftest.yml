@@ -42,12 +42,20 @@ on:
       - 'scripts/action/**'
       - '.github/workflows/action-selftest.yml'
       - 'tests/e2e/fixtures/monorepo-go-node/**'
+      - 'tests/e2e/fixtures/action-selftest-python-uv/**'
+      - 'tests/e2e/fixtures/action-selftest-bun/**'
+      - 'crates/bento-toolchain/**'
+      - 'crates/bento-cli/src/toolchain.rs'
   pull_request:
     paths:
       - 'action.yml'
       - 'scripts/action/**'
       - '.github/workflows/action-selftest.yml'
       - 'tests/e2e/fixtures/monorepo-go-node/**'
+      - 'tests/e2e/fixtures/action-selftest-python-uv/**'
+      - 'tests/e2e/fixtures/action-selftest-bun/**'
+      - 'crates/bento-toolchain/**'
+      - 'crates/bento-cli/src/toolchain.rs'
   # Manual trigger so we can re-run after a release without pushing
   # action.yml. Useful for verifying a newly-tagged binary is reachable.
   workflow_dispatch:
@@ -152,3 +160,91 @@ jobs:
           workspace-path: tests/e2e/fixtures/monorepo-go-node
           task: build
           cache-key-suffix: selftest-v1
+
+  # ── Toolchain-install regression jobs ───────────────────────────────
+  # These exercise the `install-toolchains: true` path *without* any
+  # explicit setup-* steps, so they catch the bug class from
+  # bento-cloud-pteo: a clean runner that depends on bento itself to
+  # install everything pinned in `bento.toml`'s `[toolchain]` block.
+  #
+  # If a future change breaks bento's ability to install python+uv (or
+  # the action's bun bootstrap shim), these jobs fail loudly instead of
+  # silently working only on machines where the tools happen to be
+  # pre-installed — the failure mode that let the original bug ship.
+
+  smoke-toolchain-python-uv:
+    name: smoke (toolchain install, python+uv, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Source-build the working-tree CLI so this job validates the
+      # *current* commit's toolchain logic — not a previously-released
+      # binary that won't reflect in-flight changes.
+      - name: Build bento via local action (source-build path)
+        uses: ./
+        with:
+          source-path: '.'
+          workspace-path: tests/e2e/fixtures/action-selftest-python-uv
+          task: build
+          json: 'true'
+          cache-key-suffix: selftest-toolchain-python-uv-v1
+        id: bento
+
+      - name: Validate uv installed as co-required
+        shell: bash
+        env:
+          REPORT: ${{ steps.bento.outputs.report }}
+        run: |
+          if [ -z "$REPORT" ]; then
+            echo "::error::no report output — execute step did not publish" >&2
+            exit 1
+          fi
+          # The report contains executed task results; the build task's
+          # stdout proves uv + python were both on PATH for the dish
+          # subprocess. Specifically check that the build task ran the
+          # version command (not just that the report shape parses).
+          got="$(printf '%s' "$REPORT" | jq -r '.bentos[].dishes[].name')"
+          if [ "$got" != "service" ]; then
+            echo "::error::expected dish 'service' in report, got '$got'" >&2
+            printf '%s\n' "$REPORT" >&2
+            exit 1
+          fi
+          echo "service dish ran with python+uv on PATH ✓"
+
+  smoke-toolchain-bun:
+    name: smoke (toolchain install, bun, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build bento via local action (source-build path)
+        uses: ./
+        with:
+          source-path: '.'
+          workspace-path: tests/e2e/fixtures/action-selftest-bun
+          task: build
+          json: 'true'
+          cache-key-suffix: selftest-toolchain-bun-v1
+        id: bento
+
+      - name: Validate bun installed via fallback bootstrap
+        shell: bash
+        env:
+          REPORT: ${{ steps.bento.outputs.report }}
+        run: |
+          if [ -z "$REPORT" ]; then
+            echo "::error::no report output — execute step did not publish" >&2
+            exit 1
+          fi
+          got="$(printf '%s' "$REPORT" | jq -r '.bentos[].dishes[].name')"
+          if [ "$got" != "service" ]; then
+            echo "::error::expected dish 'service' in report, got '$got'" >&2
+            printf '%s\n' "$REPORT" >&2
+            exit 1
+          fi
+          echo "service dish ran with bun on PATH ✓"

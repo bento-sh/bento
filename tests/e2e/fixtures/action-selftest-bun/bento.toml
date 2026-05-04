@@ -1,0 +1,10 @@
+# Action-selftest fixture: exercises the action's bun bootstrap path.
+# bento-toolchain doesn't have a built-in BunTool yet (zip-archive
+# support is a follow-up), so the GitHub Action wrapper falls back to
+# `bun.sh/install` when bento.toml pins bun. This fixture proves the
+# fallback works on a clean runner with no setup-bun step.
+#
+# Once bento-toolchain ships BunTool, this fixture flips to exercising
+# the native install path with no changes here.
+[toolchain]
+bun = "1.1.30"

@@ -1,0 +1,5 @@
+[project]
+name = "service"
+version = "0.0.1"
+description = "Action-selftest python dish — exercises bento's python+uv install."
+requires-python = ">=3.9"

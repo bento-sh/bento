@@ -132,6 +132,15 @@ inputs:
       .tool-versions content. Bento's adapters then transparently use the
       installed versions for every task.
 
+      Bento's built-in installers cover Go, Node, Python (delegated to
+      `uv python install`), and uv (declared co-required by the python
+      tool, so a `[toolchain] python = "..."` pin lays uv down first
+      automatically). For tools without a built-in installer —
+      currently `bun` and `deno` — the action bootstraps from each
+      ecosystem's official install script (`bun.sh/install`) before
+      invoking bento, when those tools are pinned in `bento.toml`'s
+      `[toolchain]` block.
+
       When 'false', skip both the install step and its cache. Assumes
       you've set up the right tool versions via actions/setup-* steps
       before invoking bento, and (typically) that your bento.toml has
@@ -165,7 +174,14 @@ outputs:
       JSON listing toolchains installed by the auto-install step. Set only
       when `install-toolchains: true`. Same shape as
       `bento toolchain install --json`: `{"installed": [{tool, version,
-      bin_dir, used_by}], "failed": <count>}`.
+      bin_dir, used_by | co_required_for}], "skipped": [{tool, version,
+      used_by, reason}], "failed": <count>}`. Co-required tools (e.g.
+      uv when python is pinned) appear in `installed` with
+      `co_required_for` instead of `used_by`. The `skipped` array
+      lists pinned tools that bento doesn't install natively (today:
+      `bun`, `deno`); the composite action falls back to each
+      ecosystem's official install script for those before this step
+      runs.
     value: ${{ steps.install-toolchains.outputs.json }}
 
 runs:
