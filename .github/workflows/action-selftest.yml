@@ -1,0 +1,125 @@
+name: action-selftest
+
+# Exercises ./action.yml end-to-end on every push to main + every PR.
+# Catches regressions in the action wrapper itself (composite steps,
+# input validation, output publishing, helper scripts under
+# scripts/action/) — separate from the Rust unit + e2e suites which
+# don't go through the GitHub-Actions code path.
+#
+# Strategy:
+#
+#   smoke-binary  Tests the hot path consumers will hit:
+#                 `uses: bento-sh/bento@v0.1` + `version: 0.1.0` —
+#                 downloads the prebuilt release tarball, restores
+#                 cache, runs `bento ci` against a fixture workspace.
+#                 Matrix: ubuntu + macOS.
+#
+#   smoke-source  Tests the fallback path:
+#                 `source-path: '.'` — `cargo install --locked` the
+#                 working-tree CLI, run `bento ci` against the same
+#                 fixture. Catches breakage in the cargo-install path
+#                 that the binary path skips. Linux-only since the
+#                 source build is slow and macOS only adds runner
+#                 minutes without exercising new code.
+#
+#   actionlint    Static lint on .github/workflows/*.yml — fast feedback
+#                 on workflow syntax mistakes ahead of the smoke runs.
+#                 (action.yml is a composite-action manifest, not a
+#                 workflow; actionlint can't lint it directly. The
+#                 smoke jobs cover its runtime.)
+#
+# Fixture choice: tests/e2e/fixtures/monorepo-go-node — minimal
+# polyglot fixture (Go backend + node-npm frontend). Exercises adapter
+# detection across two languages without dragging in heavy runtimes
+# (no Java / PHP / Python / Ruby). Both runtimes are pre-installed on
+# GitHub-hosted runners so no toolchain pin is needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - 'scripts/action/**'
+      - '.github/workflows/action-selftest.yml'
+      - 'tests/e2e/fixtures/monorepo-go-node/**'
+  pull_request:
+    paths:
+      - 'action.yml'
+      - 'scripts/action/**'
+      - '.github/workflows/action-selftest.yml'
+      - 'tests/e2e/fixtures/monorepo-go-node/**'
+  # Manual trigger so we can re-run after a release without pushing
+  # action.yml. Useful for verifying a newly-tagged binary is reachable.
+  workflow_dispatch:
+
+# Cancel in-flight runs on the same PR/branch when a new push lands.
+concurrency:
+  group: action-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color .github/workflows/*.yml
+
+  smoke-binary:
+    name: smoke (binary, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bento ci via local action (binary install path)
+        id: bento
+        uses: ./
+        with:
+          version: '0.1.0'
+          workspace-path: tests/e2e/fixtures/monorepo-go-node
+          task: ci
+          json: 'true'
+          # Bump if the fixture's pinning logic needs a cache-key reset.
+          cache-key-suffix: selftest-v1
+
+      - name: Validate report output contains expected dishes
+        shell: bash
+        env:
+          REPORT: ${{ steps.bento.outputs.report }}
+        run: |
+          if [ -z "$REPORT" ]; then
+            echo "::error::no report output from action — execute step did not publish" >&2
+            exit 1
+          fi
+          # Sanity-check shape: every dish from the prod bento should
+          # appear in the report's bentos[].dishes[]. Failure = the
+          # action wrapper dropped the report somewhere.
+          for dish in backend frontend; do
+            if ! printf '%s' "$REPORT" | grep -q "\"name\":\"$dish\""; then
+              echo "::error::report missing dish '$dish'" >&2
+              printf '%s\n' "$REPORT" >&2
+              exit 1
+            fi
+          done
+          echo "report contains backend + frontend ✓"
+
+  smoke-source:
+    name: smoke (source build, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bento ci via local action (source-build path)
+        uses: ./
+        with:
+          source-path: '.'
+          workspace-path: tests/e2e/fixtures/monorepo-go-node
+          task: ci
+          cache-key-suffix: selftest-v1
