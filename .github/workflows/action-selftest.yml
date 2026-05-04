@@ -46,6 +46,9 @@ on:
       - 'tests/e2e/fixtures/action-selftest-bun/**'
       - 'crates/bento-toolchain/**'
       - 'crates/bento-cli/src/toolchain.rs'
+      # Toolchain install + co-required PATH plumbing lives in
+      # ensure_toolchain — keep selftest in the trigger set.
+      - 'crates/bento-core/src/run.rs'
   pull_request:
     paths:
       - 'action.yml'
@@ -56,6 +59,7 @@ on:
       - 'tests/e2e/fixtures/action-selftest-bun/**'
       - 'crates/bento-toolchain/**'
       - 'crates/bento-cli/src/toolchain.rs'
+      - 'crates/bento-core/src/run.rs'
   # Manual trigger so we can re-run after a release without pushing
   # action.yml. Useful for verifying a newly-tagged binary is reachable.
   workflow_dispatch:
