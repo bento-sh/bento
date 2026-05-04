@@ -224,16 +224,21 @@ fn run_plan(global: &GlobalFlags, target: Option<String>) -> anyhow::Result<()> 
 fn run_ci(global: &GlobalFlags) -> anyhow::Result<i32> {
     let root = resolve_workspace_root(global)?;
 
-    // Capture cache config up front so we still have it after `ci_at`
-    // consumes its own internal Workspace load. Two TOML loads is
-    // ~10ms — fine for a CLI; alternative is widening `ci_at`'s
-    // public signature, which isn't worth it for telemetry plumbing.
-    let (cache_remote, cache_token_env) = match Workspace::load(&root) {
+    // Capture cache + telemetry config up front so we still have them
+    // after `ci_at` consumes its own internal Workspace load. Two TOML
+    // loads is ~10ms — fine for a CLI; alternative is widening
+    // `ci_at`'s public signature, which isn't worth it for telemetry
+    // plumbing.
+    let (cache_remote, cache_token_env, telemetry_enabled) = match Workspace::load(&root) {
         Ok(w) => (
             w.repo.cache.remote.clone(),
             w.repo.cache.remote_token_env.clone(),
+            w.repo.telemetry.enabled,
         ),
-        Err(_) => (None, None),
+        // Conservative default: if config fails to load, treat
+        // telemetry as off. We can't have meaningfully consented to
+        // sending data when we couldn't even read the consent flag.
+        Err(_) => (None, None, false),
     };
 
     let opts = CiOptions {
@@ -259,6 +264,7 @@ fn run_ci(global: &GlobalFlags) -> anyhow::Result<i32> {
     // gated on telemetry.
     let package = global.bento.clone().unwrap_or_else(|| "all".to_string());
     bento_core::report::send(
+        telemetry_enabled,
         cache_remote.as_deref(),
         cache_token_env.as_deref(),
         &report,
@@ -311,10 +317,11 @@ fn run_task_command(
         force_deploy: false,
     };
 
-    // Capture cache config before the workspace moves into Executor
-    // so we can fire the build report after the run.
+    // Capture cache + telemetry config before the workspace moves into
+    // Executor so we can fire the build report after the run.
     let cache_remote = workspace.repo.cache.remote.clone();
     let cache_token_env = workspace.repo.cache.remote_token_env.clone();
+    let telemetry_enabled = workspace.repo.telemetry.enabled;
 
     // Run with the pre-loaded workspace to avoid a second TOML pass.
     let registry = plugins::build_registry(&workspace);
@@ -331,6 +338,7 @@ fn run_task_command(
             .or(dish_filter)
             .unwrap_or_else(|| "all".to_string());
         bento_core::report::send(
+            telemetry_enabled,
             cache_remote.as_deref(),
             cache_token_env.as_deref(),
             &report,

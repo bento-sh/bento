@@ -8,6 +8,18 @@
 //! implement the endpoint against any backend, or reject with 404 and
 //! the CLI silently no-ops.
 //!
+//! # Opt-out
+//!
+//! Two paths, either of which suppresses every report:
+//! - `[telemetry] enabled = false` in `bento.toml` (committed; team-wide).
+//! - `BENTO_TELEMETRY=0` (or `false` / `no` / `off`) in the
+//!   environment (per-machine override; cannot force telemetry on if
+//!   the config disables it — the precedence is "either says off →
+//!   off", never the reverse).
+//!
+//! `bento doctor` surfaces the resolved posture as the
+//! `telemetry.posture` check.
+//!
 //! # Posture
 //!
 //! Best-effort. Any failure (no remote configured, no token, network
@@ -27,20 +39,70 @@ use crate::run::ExecutionReport;
 /// post should not visibly stall the CLI.
 const POST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Resolved telemetry posture for diagnostics. Use [`telemetry_posture`]
+/// to compute, [`TelemetryPosture::is_enabled`] for a bool gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryPosture {
+    /// Both config and env permit telemetry.
+    Enabled,
+    /// `[telemetry] enabled = false` in bento.toml.
+    DisabledByConfig,
+    /// `BENTO_TELEMETRY` set to `0` / `false` / `no` / `off`.
+    DisabledByEnv,
+    /// Both config and env disable telemetry.
+    DisabledByBoth,
+}
+
+impl TelemetryPosture {
+    pub fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+/// Resolve telemetry posture from the config flag plus the
+/// `BENTO_TELEMETRY` env var.
+///
+/// Precedence is "either says off → off". The env var is a per-machine
+/// opt-out; it cannot force telemetry on if the committed config
+/// disables it (otherwise a team-policy `enabled = false` could be
+/// silently bypassed by a per-shell `BENTO_TELEMETRY=1`).
+pub fn telemetry_posture(config_enabled: bool) -> TelemetryPosture {
+    let env_off = matches!(
+        std::env::var("BENTO_TELEMETRY").as_deref(),
+        Ok("0") | Ok("false") | Ok("no") | Ok("off")
+    );
+    match (config_enabled, env_off) {
+        (true, false) => TelemetryPosture::Enabled,
+        (true, true) => TelemetryPosture::DisabledByEnv,
+        (false, false) => TelemetryPosture::DisabledByConfig,
+        (false, true) => TelemetryPosture::DisabledByBoth,
+    }
+}
+
 /// Fire a build report at the configured `bento://` remote.
 ///
-/// `cache_remote` and `cache_token_env` come from the caller's loaded
-/// `Workspace` (`workspace.repo.cache.remote` /
+/// `telemetry_enabled` comes from `workspace.repo.telemetry.enabled` —
+/// passing `false` short-circuits before any URL construction or env
+/// lookup. `cache_remote` and `cache_token_env` come from the caller's
+/// loaded `Workspace` (`workspace.repo.cache.remote` /
 /// `workspace.repo.cache.remote_token_env`); kept as plain `&str`s
 /// here so this module doesn't pull in `bento-config` and stays easy
 /// to call after the `Workspace` has already moved into an
 /// `Executor`.
 pub fn send(
+    telemetry_enabled: bool,
     cache_remote: Option<&str>,
     cache_token_env: Option<&str>,
     report: &ExecutionReport,
     package: impl Into<String>,
 ) {
+    let posture = telemetry_posture(telemetry_enabled);
+    if !posture.is_enabled() {
+        // tracing::debug so a `-v` run can confirm the suppression.
+        // No info/warn — opting out shouldn't add steady-state noise.
+        tracing::debug!(?posture, "report/build: skipped (telemetry disabled)");
+        return;
+    }
     let Some(url) = build_endpoint(cache_remote) else {
         return; // no remote, or s3:// — nothing to report to.
     };
@@ -314,5 +376,80 @@ mod tests {
         let r = report_with(ExecutionSummary::default());
         let br = build_report_from(&r, "api/server".into());
         assert_eq!(br.package, "api/server");
+    }
+
+    // ── Telemetry posture ──────────────────────────────────────────
+    //
+    // These tests mutate process-global env state (`BENTO_TELEMETRY`)
+    // so they share a serialization mutex. cargo test runs tests in
+    // parallel by default and the matrix below would race otherwise.
+    use std::sync::Mutex;
+    static TELEMETRY_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_telemetry_env<F: FnOnce()>(value: Option<&str>, f: F) {
+        let _g = TELEMETRY_ENV_LOCK.lock().unwrap();
+        let prior = std::env::var("BENTO_TELEMETRY").ok();
+        match value {
+            Some(v) => std::env::set_var("BENTO_TELEMETRY", v),
+            None => std::env::remove_var("BENTO_TELEMETRY"),
+        }
+        f();
+        match prior {
+            Some(v) => std::env::set_var("BENTO_TELEMETRY", v),
+            None => std::env::remove_var("BENTO_TELEMETRY"),
+        }
+    }
+
+    #[test]
+    fn posture_enabled_when_config_on_and_env_unset() {
+        with_telemetry_env(None, || {
+            assert_eq!(telemetry_posture(true), TelemetryPosture::Enabled);
+            assert!(telemetry_posture(true).is_enabled());
+        });
+    }
+
+    #[test]
+    fn posture_disabled_by_config() {
+        with_telemetry_env(None, || {
+            assert_eq!(telemetry_posture(false), TelemetryPosture::DisabledByConfig);
+            assert!(!telemetry_posture(false).is_enabled());
+        });
+    }
+
+    #[test]
+    fn posture_disabled_by_env() {
+        for v in ["0", "false", "no", "off"] {
+            with_telemetry_env(Some(v), || {
+                assert_eq!(
+                    telemetry_posture(true),
+                    TelemetryPosture::DisabledByEnv,
+                    "BENTO_TELEMETRY={v} should suppress"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn posture_disabled_by_both_when_config_off_and_env_off() {
+        with_telemetry_env(Some("0"), || {
+            assert_eq!(telemetry_posture(false), TelemetryPosture::DisabledByBoth);
+        });
+    }
+
+    #[test]
+    fn posture_env_cannot_force_on_when_config_off() {
+        // Per-machine env should never override a committed
+        // [telemetry] enabled = false. Common values that COULD be
+        // mistaken for opt-in (1, true, yes) all leave the config
+        // result intact.
+        for v in ["1", "true", "yes", "on"] {
+            with_telemetry_env(Some(v), || {
+                assert_eq!(
+                    telemetry_posture(false),
+                    TelemetryPosture::DisabledByConfig,
+                    "BENTO_TELEMETRY={v} must not flip a config-off to on"
+                );
+            });
+        }
     }
 }

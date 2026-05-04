@@ -53,7 +53,12 @@ remote_region = "us-east-1"
 # use $BENTO_CACHE_TOKEN in CI.
 
 [telemetry]
-# Anonymous usage metrics. Set false to opt out.
+# Build reports — sent only to the `bento://` cache remote configured
+# above. Wire shape: package, branch, sha, cache_hit_ratio, status,
+# duration_ms (no PII, env values, or command lines). Self-hosters with
+# no `bento://` remote: nothing is ever sent. Opt out via this flag,
+# or per-machine via `BENTO_TELEMETRY=0` (also accepts `false` / `no`
+# / `off`). `bento doctor` reports the resolved posture.
 enabled = true
 
 [execution]
@@ -105,7 +110,14 @@ allowlist = ["erlang", "elixir"]
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `true` | Anonymous usage metrics. |
+| `enabled` | bool | `true` | Send a build report to the configured `bento://` cache remote after `bento ci` and `bento build`. Wire shape: `package`, `branch`, `sha`, `cache_hit_ratio`, `status`, `duration_ms` — no PII, env values, or command lines. Best-effort POST: failures are logged at `warn`, never block the build. With no `bento://` remote configured, nothing is ever sent regardless of this flag. |
+
+**Opt-out paths** (precedence: either says off → off; the env var cannot force telemetry on if the config disables it):
+
+- `[telemetry] enabled = false` in `bento.toml` — committed, team-wide.
+- `BENTO_TELEMETRY=0` (or `false` / `no` / `off`) — per-machine override, useful in CI or local shells.
+
+`bento doctor` reports the resolved posture as the `telemetry.posture` check (`enabled` / `disabled by config` / `disabled by env` / `disabled by both`).
 
 ### `[execution]`
 

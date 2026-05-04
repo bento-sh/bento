@@ -159,6 +159,11 @@ pub fn run_with_options(
     // 5. Remote cache (if configured).
     checks.push(check_remote_cache(&workspace));
 
+    // 5b. Telemetry posture — surfaces the resolved opt-in/opt-out so
+    //     users can verify [telemetry] enabled = false / BENTO_TELEMETRY=0
+    //     are actually taking effect.
+    checks.push(check_telemetry_posture(&workspace));
+
     // 6. GHA cache (when running inside GitHub Actions).
     checks.push(check_gha_cache());
 
@@ -577,6 +582,45 @@ fn check_remote_cache(workspace: &Workspace) -> DoctorCheck {
         "cache.remote",
         format!("configured: {remote} (region={region}, reachability not probed)"),
     )
+}
+
+// ── Telemetry posture check ────────────────────────────────────────
+
+fn check_telemetry_posture(workspace: &Workspace) -> DoctorCheck {
+    use crate::report::{telemetry_posture, TelemetryPosture};
+
+    let cfg = workspace.repo.telemetry.enabled;
+    let posture = telemetry_posture(cfg);
+    let remote = workspace.repo.cache.remote.as_deref();
+    let bento_remote_present = remote.is_some_and(|r| r.starts_with("bento://"));
+
+    match posture {
+        TelemetryPosture::Enabled if bento_remote_present => check_ok(
+            "telemetry.posture",
+            format!(
+                "enabled — build reports POST to {} after `bento ci` / `bento build` \
+                 (opt out via `[telemetry] enabled = false` in bento.toml or BENTO_TELEMETRY=0)",
+                remote.unwrap_or("<no remote>")
+            ),
+        ),
+        TelemetryPosture::Enabled => check_ok(
+            "telemetry.posture",
+            "enabled in config but no `bento://` remote configured — \
+             nothing is sent (set `[cache] remote = \"bento://...\"` to wire reporting)",
+        ),
+        TelemetryPosture::DisabledByConfig => check_ok(
+            "telemetry.posture",
+            "disabled by config: `[telemetry] enabled = false` in bento.toml",
+        ),
+        TelemetryPosture::DisabledByEnv => check_ok(
+            "telemetry.posture",
+            "disabled by env: BENTO_TELEMETRY is set off (config flag would otherwise allow it)",
+        ),
+        TelemetryPosture::DisabledByBoth => check_ok(
+            "telemetry.posture",
+            "disabled by both: `[telemetry] enabled = false` and BENTO_TELEMETRY env var off",
+        ),
+    }
 }
 
 // ── GHA cache check ────────────────────────────────────────────────
