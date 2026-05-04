@@ -1,6 +1,6 @@
 # Using bento with coding agents
 
-Bento is built for agents first. This page covers how to wire a coding agent (Claude Code, Cursor, Codex, whatever) into a bento-managed repo so the agent uses `bento` verbs instead of rediscovering native tooling every turn.
+Bento is built for agents first. This page covers how to wire a coding agent — Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, OpenCode, Zed, or any other MCP-speaking client — into a bento-managed repo so the agent uses `bento` verbs instead of rediscovering native tooling every turn.
 
 ---
 
@@ -72,19 +72,19 @@ This repo is managed by **bento** (<https://github.com/bento-sh/bento>). Bento w
 ### Installing bento (if the binary isn't on the host yet)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bento-sh/bento/main/install.sh | sh
+curl -fsSL https://bento.build/install | sh
 ```
 
 Or pin a version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bento-sh/bento/v0.1.0/install.sh | sh -s -- 0.1.0
+curl -fsSL https://bento.build/install | sh -s -- 0.1.0
 ```
 
-Installs to `~/.local/bin/bento` by default. Set `BENTO_INSTALL_DIR` to override.
+Installs both `bento` and `bento-mcp` to `~/.local/bin/` by default, plus the Claude Code skill bundle under `~/.claude/skills/bento/`. Set `BENTO_INSTALL_DIR` to override the binary path or `BENTO_SKILL_DIR` to override the skill path.
 ````
 
-Drop that block in as-is. Most coding agents (Claude Code, Cursor, Codex, ...) scan top-level markdown files on session start and treat them as persistent instructions.
+Drop that block in as-is. Most coding agents — Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, OpenCode, Zed, … — scan top-level markdown files on session start and treat them as persistent instructions.
 
 ---
 
@@ -196,9 +196,18 @@ No shell, no stdout-parsing, every step returns structured JSON the agent's tool
 
 ---
 
-## Claude Code skill (opt-in, one-time setup)
+## Claude Code skill (auto-installed by `install.sh`)
 
-Bento ships a [Claude Code skill](../skills/bento/SKILL.md) that activates automatically when the agent is working in a bento-managed repo — no `CLAUDE.md` snippet required per repo. Install once:
+Bento ships a [Claude Code skill](../skills/bento/SKILL.md) that activates automatically when the agent is working in a bento-managed repo — no `CLAUDE.md` snippet required per repo. **The official installer drops the skill under `~/.claude/skills/bento/` for you** — if you ran `curl -fsSL https://bento.build/install | sh`, you already have it.
+
+To verify or update by hand:
+
+```sh
+ls ~/.claude/skills/bento/SKILL.md          # should exist
+BENTO_FORCE_SKILL=1 curl -fsSL https://bento.build/install | sh   # re-fetch from the latest release tarball
+```
+
+If you'd rather grab the file directly without re-running the installer:
 
 ```sh
 mkdir -p ~/.claude/skills/bento

@@ -234,7 +234,8 @@ force_independent = false
 go = "1.22.5"
 
 # Tasks. Adapters supply default `build`, `test`, `lint` recipes per
-# language; declare a [tasks.<name>] block here to override or add.
+# language (plus `check` for cargo + go — the fast type-check verb);
+# declare a [tasks.<name>] block here to override or add.
 [tasks.build]
 run = "go build -o bin/api ./cmd/api"
 inputs = ["**/*.go", "go.mod", "go.sum"]
@@ -258,7 +259,7 @@ run = "air"
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | required | Dish handle. Used by CLI flags (`bento build <name>`) and bentos' `dishes` list. Must be unique across the workspace. |
-| `language` | string | adapter-detected | Adapter id (`go`, `cargo`, `python`, `ruby`, `php`, `maven`, `gradle`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`, `deno`, or any plugin's id). When omitted, bento auto-detects from the dish dir. |
+| `language` | string | adapter-detected | Adapter id (`go`, `cargo`, `python`, `python-uv`, `ruby`, `php`, `maven`, `gradle`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`, `deno`, or any plugin's id). When omitted, bento auto-detects from the dish dir. |
 | `package_manager` | string | unset | Reserved for future use; no behaviour today. |
 | `inputs` | `string[]` | `[]` | Glob patterns relative to the dish dir. Files matching are mixed into the cache key for **every** task in the dish. Adapters add their own fingerprint files automatically (lockfiles, toolchain pin files, `.tool-versions`). |
 | `outputs` | `string[]` | `[]` | Glob patterns of build artefacts. Listed by `bento artifacts` and the GHA `artifacts` output. |
@@ -271,7 +272,7 @@ Same shape as `bento.toml`'s `[toolchain]` table — `<tool> = "<version>"` pair
 
 ### `[tasks.<name>]`
 
-Tasks named `build`, `test`, `lint` get **default recipes from the adapter** for the dish's language. You only need a `[tasks.<name>]` block to:
+Tasks named `build`, `test`, `lint` (plus `check` on cargo + go) get **default recipes from the adapter** for the dish's language. You only need a `[tasks.<name>]` block to:
 - Override the default command (e.g. add flags)
 - Declare a custom task name (e.g. `migrate`, `seed`, `deploy-preview`)
 - Add task-specific `inputs` / `outputs` / `env` / `retry` config

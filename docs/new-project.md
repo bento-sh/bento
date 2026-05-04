@@ -7,7 +7,7 @@ The matching adoption walkthrough (existing repo) is at [adopt-existing-repo.md]
 ## 0. Prerequisites
 
 - bento installed (see [README › Install](../README.md#install))
-- The native toolchain(s) for whatever languages you plan to ship — Go, Node, Java, etc. bento doesn't install them itself; it expects them on `$PATH`.
+- A native toolchain for whatever languages you plan to ship. **bento can install the toolchain itself** when you pin a version in `[toolchain]` — Go, Node, and Python (via `uv`) are auto-installed into `~/.bento/tools/` on demand. For other languages (Java, Ruby, PHP, …) bento uses whatever's on `$PATH`. See [README › Toolchain handling](../README.md#toolchain-handling) for the full opt-in / opt-out semantics.
 
 ## 1. Bootstrap the workspace
 
@@ -66,7 +66,7 @@ name = "api"
 language = "go"
 ```
 
-That's all — the Go adapter supplies the default `build`, `test`, `lint` task recipes. You add a `[tasks.<name>]` block here only when you want to override or add a custom task.
+That's all — the Go adapter supplies the default `build`, `check`, `test`, `lint` task recipes (`check` runs `go vet`, the fast type-check). You add a `[tasks.<name>]` block here only when you want to override or add a custom task.
 
 ## 3. Add a second dish
 
