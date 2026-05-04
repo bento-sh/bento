@@ -1376,32 +1376,50 @@ impl Executor {
             }
         };
 
+        // Tools without a built-in installer (today: bun, deno) reach
+        // here when they're pinned in `[toolchain]`. The action wrapper
+        // installs them out-of-band (curl bun.sh/install) and puts
+        // them on the runner's PATH; we just trust that and don't
+        // shell out to `installer.ensure` (which would error with
+        // "no built-in tool registered"). Same posture as install_all,
+        // which reports them as `skipped` instead of failing.
+        let Some(primary) = installer.tool(&resolution.tool) else {
+            tracing::info!(
+                tool = %resolution.tool,
+                version = %version,
+                "no built-in installer; trusting system PATH",
+            );
+            return Ok(Vec::new());
+        };
+
         // Co-required tools install first so the primary's
         // `delegated_ensure` (e.g. python → uv) finds its sibling on
         // PATH. Their bin dirs are also returned to the caller so the
         // task subprocess sees them — a python task running `uv sync`
-        // needs `uv` discoverable just like it needs `python`.
+        // needs `uv` discoverable just like it needs `python`. Each
+        // co-tool's bin dir is prepended to *this* process's PATH the
+        // moment it's installed so the very next `installer.ensure`
+        // for the primary picks it up via `Command::new(...)`.
         let mut paths: Vec<PathBuf> = Vec::new();
-        if let Some(primary) = installer.tool(&resolution.tool) {
-            for co in primary.co_required() {
-                let co_version = self
-                    .workspace
-                    .repo
-                    .toolchain
-                    .pins
-                    .get(co.tool)
-                    .cloned()
-                    .unwrap_or_else(|| co.default_version.to_string());
-                let co_bin = installer
-                    .ensure(co.tool, &co_version, target)
-                    .with_context(|| {
-                        format!(
-                            "installing co-required toolchain {}@{} (for {})",
-                            co.tool, co_version, resolution.tool
-                        )
-                    })?;
-                paths.push(co_bin);
-            }
+        for co in primary.co_required() {
+            let co_version = self
+                .workspace
+                .repo
+                .toolchain
+                .pins
+                .get(co.tool)
+                .cloned()
+                .unwrap_or_else(|| co.default_version.to_string());
+            let co_bin = installer
+                .ensure(co.tool, &co_version, target)
+                .with_context(|| {
+                    format!(
+                        "installing co-required toolchain {}@{} (for {})",
+                        co.tool, co_version, resolution.tool
+                    )
+                })?;
+            prepend_path_env(&co_bin);
+            paths.push(co_bin);
         }
 
         let bin_dir = installer
@@ -2341,6 +2359,23 @@ fn build_path(prepend: &[PathBuf]) -> OsString {
         }
     }
     std::env::join_paths(entries).unwrap_or_default()
+}
+
+/// Prepend `bin_dir` to the *current* process's `PATH` env var. Used
+/// inside `ensure_toolchain` so a freshly-installed co-required tool
+/// (e.g. uv) is visible to the next `installer.ensure(primary)` call,
+/// which shells out via `Command::new(...)` and inherits PATH.
+///
+/// Edition 2021 — `set_var` is safe. bento's CLI is single-threaded
+/// at this point (toolchain installs run sequentially before any
+/// task work spawns); nothing else is mutating PATH concurrently.
+fn prepend_path_env(bin_dir: &Path) {
+    let cur = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&cur).collect();
+    paths.insert(0, bin_dir.to_path_buf());
+    if let Ok(joined) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", joined);
+    }
 }
 
 /// Return the list of required env var names that aren't resolvable
