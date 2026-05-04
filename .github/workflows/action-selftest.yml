@@ -78,15 +78,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run bento ci via local action (binary install path)
+      # The fixture's `backend` dish needs Go on PATH; macos-latest
+      # runners don't pre-install it. Pin a recent stable version
+      # rather than the runner default so the smoke run can't drift
+      # silently on a runner-image update.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # `frontend` dish (node-npm). Node is on most runners but pinning
+      # via setup-node lets the same workflow line work everywhere
+      # without depending on the runner image's default version.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run bento via local action (binary install path)
         id: bento
         uses: ./
         with:
           version: '0.1.0'
           workspace-path: tests/e2e/fixtures/monorepo-go-node
-          task: ci
+          # `task: build` instead of `ci` — the fixture's `lint` task
+          # calls `golangci-lint`, which isn't on stock GitHub runners
+          # and isn't worth pre-installing for an action-wrapper smoke.
+          # `build` exercises adapter detection, install, plan,
+          # execute, and output publishing — the action's core contract.
+          task: build
           json: 'true'
-          # Bump if the fixture's pinning logic needs a cache-key reset.
+          # Bump if a cache-shape change forces a cold restart.
           cache-key-suffix: selftest-v1
 
       - name: Validate report output contains expected dishes
@@ -116,10 +136,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run bento ci via local action (source-build path)
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run bento via local action (source-build path)
         uses: ./
         with:
           source-path: '.'
           workspace-path: tests/e2e/fixtures/monorepo-go-node
-          task: ci
+          task: build
           cache-key-suffix: selftest-v1

@@ -180,7 +180,9 @@ jobs:
       - name: Aggregate checksums
         working-directory: dist
         run: |
-          cat *.sha256 > SHA256SUMS
+          # `--` so a hypothetical asset name beginning with `-` can't
+          # be parsed as a flag (shellcheck SC2035).
+          cat -- *.sha256 > SHA256SUMS
           ls -la
 
       - name: Publish GitHub Release
