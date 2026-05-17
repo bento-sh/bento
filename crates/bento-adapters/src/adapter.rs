@@ -302,6 +302,29 @@ pub trait LanguageAdapter: Send + Sync {
         InstallProbe::Ready
     }
 
+    /// Directory the executor should run [`install`] in, deduped across
+    /// dishes that share the same scope.
+    ///
+    /// Default: `dir.to_path_buf()` — each dish installs in its own
+    /// directory, no dedup beyond the executor's per-dish-once contract.
+    /// Override when a single `install` call resolves dependencies for
+    /// multiple dishes (JS workspaces hoist deps into a shared
+    /// `node_modules/` and create cross-package symlinks; running two
+    /// installs concurrently races on the symlink creation and one
+    /// fails with EEXIST).
+    ///
+    /// The executor maintains a per-scope `OnceLock` keyed on this
+    /// path. The first dish in a scope that reports
+    /// [`InstallProbe::Missing`] runs `install` against the scope dir;
+    /// concurrent siblings block on the lock and skip their own
+    /// install. Sibling failure is propagated so every dish in the
+    /// scope fails fast on a broken install.
+    ///
+    /// [`install`]: Self::install
+    fn install_scope(&self, dir: &Path) -> PathBuf {
+        dir.to_path_buf()
+    }
+
     /// Default tasks supplied by this adapter (merged with `dish.toml`).
     fn default_tasks(&self) -> Vec<DefaultTask>;
 
