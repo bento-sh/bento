@@ -135,7 +135,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bento-adapter-noop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "bento-adapters"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bento-adapter-noop",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "bento-cache"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bento-cas-protocol",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "bento-cas-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "schemars",
  "serde",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "bento-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bento-adapters",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "bento-config"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "bento-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "bento-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bento-config",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "bento-plugin"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "bento-toolchain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bento-adapters",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "bento-watch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "globset",
