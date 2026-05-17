@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent installs no longer race on shared JS workspaces.** Dishes that share a `package.json` `"workspaces"` set (npm / yarn / bun) or a `pnpm-workspace.yaml` (pnpm) all resolve to the same hoisted `node_modules/`. Before this fix, `bento ci` / `build` / `deploy` would spawn `bun install` / `pnpm install` per dish in parallel, both racing to create the same workspace symlink under `node_modules/@scope/<pkg>` — one would EEXIST and the deploy would die mid-build. Reported downstream after a CI-passing branch deployed broken. New `LanguageAdapter::install_scope()` returns the workspace root for the four node-family adapters; the executor dedupes `install()` calls against a per-scope `OnceLock`, so the first probe-Missing dish in a scope runs install at the root and concurrent siblings block-then-skip. Install failures on the winner propagate as a synthetic `InstallRecord` on every dish in the scope, so the whole workspace fails fast instead of half-running tasks against poisoned deps. Adapters outside node-family (go, cargo, python, php, ...) inherit the trait default (`dir`) and keep one-install-per-dish semantics.
+
 ## [0.1.1] - 2026-05-04
 
 Bug-fix release driven by the first real CI consumer (gosho-io/gosho-app) hitting the `[toolchain]`-pin install path on a clean GitHub-Actions runner. Two `bento toolchain install` regressions ship fixed; the underlying generalization (co-required tools) opens the door for pnpm / yarn / composer / bundler / mvn to land in the same shape later.

@@ -7,7 +7,7 @@
 //! - Install: `pnpm install --frozen-lockfile`.
 //! - Default tasks: `build`, `test`, `lint` via `pnpm run <task>`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
@@ -18,7 +18,9 @@ use crate::adapter::{
 };
 use crate::diagnostic::DiagnosticHook;
 use crate::node_common::node_eslint_hook;
-use crate::node_common::{base_inputs, detected_npm_scripts, resolve_node_version};
+use crate::node_common::{
+    base_inputs, detected_npm_scripts, find_node_workspace_root, resolve_node_version,
+};
 
 pub struct PnpmAdapter;
 
@@ -93,6 +95,10 @@ impl LanguageAdapter for PnpmAdapter {
         } else {
             InstallProbe::missing("node_modules/.modules.yaml absent")
         }
+    }
+
+    fn install_scope(&self, dir: &Path) -> PathBuf {
+        find_node_workspace_root(dir).unwrap_or_else(|| dir.to_path_buf())
     }
 
     fn resolved_toolchain_fingerprint(&self) -> Option<String> {
@@ -226,5 +232,30 @@ mod tests {
         std::fs::create_dir(tmp.path().join("node_modules")).unwrap();
         std::fs::write(tmp.path().join("node_modules/.modules.yaml"), "").unwrap();
         assert_eq!(PnpmAdapter.install_probe(tmp.path()), InstallProbe::Ready);
+    }
+
+    #[test]
+    fn install_scope_returns_workspace_root_via_pnpm_workspace_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        let leaf = tmp.path().join("packages/web");
+        std::fs::create_dir_all(&leaf).unwrap();
+        assert_eq!(
+            PnpmAdapter.install_scope(&leaf).canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn install_scope_falls_back_to_dish_dir_when_standalone() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            PnpmAdapter.install_scope(tmp.path()),
+            tmp.path().to_path_buf()
+        );
     }
 }

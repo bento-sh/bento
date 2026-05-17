@@ -18,7 +18,7 @@
 //! Keeping the parsers in one module means a fix to (say) the `v`-prefix
 //! handling lands everywhere at once.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -156,6 +156,38 @@ fn read_volta_node(pkg_json: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Walk up from `dir`'s parent looking for the nearest ancestor that
+/// declares a JS workspace — `package.json` with a `"workspaces"` field
+/// (npm / yarn / bun) or a `pnpm-workspace.yaml` (pnpm). Returns the
+/// ancestor's path when found; `None` otherwise.
+///
+/// Deliberately skips `dir` itself: a workspace-root dish IS its own
+/// install scope, which the [`LanguageAdapter::install_scope`] default
+/// (`dir`) already returns.
+///
+/// Used to dedupe `adapter.install()` calls in the executor — every dish
+/// inside a shared JS workspace returns the same root, so concurrent
+/// dishes pile into one install instead of racing on the hoisted
+/// `node_modules` symlinks.
+pub fn find_node_workspace_root(dir: &Path) -> Option<PathBuf> {
+    let mut current = dir.parent()?;
+    loop {
+        if current.join("pnpm-workspace.yaml").is_file()
+            || package_json_has_workspaces(&current.join("package.json"))
+        {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+}
+
+fn package_json_has_workspaces(pkg_json: &Path) -> bool {
+    matches!(
+        read_package_json(pkg_json),
+        Ok(Some(ref v)) if v.get("workspaces").is_some()
+    )
+}
+
 fn read_package_json(pkg_json: &Path) -> Result<Option<serde_json::Value>> {
     if !pkg_json.is_file() {
         return Ok(None);
@@ -256,6 +288,92 @@ pub fn base_inputs(lockfile: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_workspace_root_returns_none_when_no_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let leaf = tmp.path().join("packages/web");
+        std::fs::create_dir_all(&leaf).unwrap();
+        // No package.json with workspaces anywhere — leaf is standalone.
+        assert_eq!(find_node_workspace_root(&leaf), None);
+    }
+
+    #[test]
+    fn find_workspace_root_walks_up_to_npm_workspaces_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        let leaf = tmp.path().join("packages/web");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(leaf.join("package.json"), r#"{"name":"web"}"#).unwrap();
+        assert_eq!(
+            find_node_workspace_root(&leaf)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn find_workspace_root_recognises_pnpm_workspace_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        let leaf = tmp.path().join("packages/api");
+        std::fs::create_dir_all(&leaf).unwrap();
+        assert_eq!(
+            find_node_workspace_root(&leaf)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn find_workspace_root_skips_self_dir() {
+        // A workspace-root dish IS its own install scope; the helper
+        // walks parents only so the trait default (`dir`) handles it.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        assert_eq!(find_node_workspace_root(tmp.path()), None);
+    }
+
+    #[test]
+    fn find_workspace_root_object_form_workspaces_field_works() {
+        // `"workspaces": { "packages": [...] }` — yarn berry / npm 7+ form.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"root","workspaces":{"packages":["apps/*"]}}"#,
+        )
+        .unwrap();
+        let leaf = tmp.path().join("apps/foo");
+        std::fs::create_dir_all(&leaf).unwrap();
+        assert!(find_node_workspace_root(&leaf).is_some());
+    }
+
+    #[test]
+    fn find_workspace_root_ignores_package_json_without_workspaces() {
+        // A bare `package.json` (no workspaces field) is just a sibling
+        // package, not a workspace root.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("package.json"), r#"{"name":"x"}"#).unwrap();
+        let leaf = tmp.path().join("nested");
+        std::fs::create_dir_all(&leaf).unwrap();
+        assert_eq!(find_node_workspace_root(&leaf), None);
+    }
 
     #[test]
     fn node_eslint_hook_returns_replace_for_lint() {

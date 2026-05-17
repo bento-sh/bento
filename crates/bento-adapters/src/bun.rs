@@ -9,7 +9,7 @@
 //! - Install: `bun install --frozen-lockfile`.
 //! - Default tasks: `bun run build` / `bun test` / `bun run lint`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
@@ -21,7 +21,8 @@ use crate::adapter::{
 use crate::diagnostic::DiagnosticHook;
 use crate::node_common::node_eslint_hook;
 use crate::node_common::{
-    base_inputs, detected_npm_scripts, read_version_file, resolve_node_version, tool_version,
+    base_inputs, detected_npm_scripts, find_node_workspace_root, read_version_file,
+    resolve_node_version, tool_version,
 };
 
 pub struct BunAdapter;
@@ -114,6 +115,10 @@ impl LanguageAdapter for BunAdapter {
         } else {
             InstallProbe::missing("node_modules missing or empty")
         }
+    }
+
+    fn install_scope(&self, dir: &Path) -> PathBuf {
+        find_node_workspace_root(dir).unwrap_or_else(|| dir.to_path_buf())
     }
 
     fn resolved_toolchain_fingerprint(&self) -> Option<String> {
@@ -267,5 +272,30 @@ mod tests {
         let tmp = tmp_with(&[("bun.lock", "")]);
         std::fs::create_dir_all(tmp.path().join("node_modules/foo")).unwrap();
         assert_eq!(BunAdapter.install_probe(tmp.path()), InstallProbe::Ready);
+    }
+
+    #[test]
+    fn install_scope_returns_workspace_root_for_workspace_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        let leaf = tmp.path().join("packages/web");
+        std::fs::create_dir_all(&leaf).unwrap();
+        assert_eq!(
+            BunAdapter.install_scope(&leaf).canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn install_scope_falls_back_to_dish_dir_when_standalone() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            BunAdapter.install_scope(tmp.path()),
+            tmp.path().to_path_buf()
+        );
     }
 }

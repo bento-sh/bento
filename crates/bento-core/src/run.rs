@@ -4,9 +4,11 @@
 //! Within a dish we run tasks sequentially. Cross-dish parallelism lands
 //! with the real dep graph in a future release.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -319,7 +321,22 @@ pub struct Executor {
     /// once at executor construction. Interior-mutable because dishes
     /// run in parallel and each may write back on a successful deploy.
     deploy_state: std::sync::Mutex<crate::deploy_state::DeployState>,
+    /// Dedup ledger for `adapter.install()` calls, keyed on the
+    /// adapter-reported [`LanguageAdapter::install_scope`]. Dishes in a
+    /// shared JS workspace all resolve to the same scope path; the
+    /// first dish whose probe says Missing wins the slot and runs
+    /// install, concurrent siblings block on the `OnceLock` and then
+    /// observe the winner's result. Stops two `bun install` /
+    /// `pnpm install` calls from racing on the workspace's hoisted
+    /// `node_modules` and EEXIST-ing on a symlink.
+    install_scopes: std::sync::Mutex<HashMap<PathBuf, InstallSlot>>,
 }
+
+/// Per-scope install ledger entry. `Ok(())` after a successful install,
+/// `Err(msg)` if the install command failed (so concurrent siblings can
+/// surface the same failure rather than retrying against the same
+/// poisoned scope).
+type InstallSlot = Arc<OnceLock<Result<(), String>>>;
 
 impl Executor {
     pub fn new(workspace: Workspace, registry: AdapterRegistry, cache: LocalCache) -> Self {
@@ -334,6 +351,7 @@ impl Executor {
             remote,
             pending_writes: std::sync::Mutex::new(Vec::new()),
             deploy_state: std::sync::Mutex::new(deploy_state),
+            install_scopes: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -355,6 +373,7 @@ impl Executor {
             remote,
             pending_writes: std::sync::Mutex::new(Vec::new()),
             deploy_state: std::sync::Mutex::new(deploy_state),
+            install_scopes: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1268,6 +1287,13 @@ impl Executor {
     /// Returns `Some(InstallRecord)` if install was invoked (success or
     /// failure), `None` when the probe reported Ready / install was
     /// skipped / no adapter.
+    ///
+    /// Calls are deduped per [`LanguageAdapter::install_scope`]: dishes
+    /// in a shared JS workspace all resolve to the same scope dir, so
+    /// the first probe-Missing caller runs install and concurrent
+    /// siblings block on a per-scope `OnceLock`. On winner failure,
+    /// siblings receive a synthetic `InstallRecord` carrying the
+    /// failure so they skip their tasks too.
     fn ensure_installed(
         &self,
         loaded: &LoadedDish,
@@ -1300,20 +1326,55 @@ impl Executor {
             }
         };
 
-        tracing::info!(
-            dish = %loaded.config.name,
-            adapter = %adapter.id(),
-            %reason,
-            "dependencies missing — running install"
-        );
+        let scope = adapter.install_scope(&loaded.dir);
+        let slot = {
+            let mut guard = self
+                .install_scopes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            Arc::clone(
+                guard
+                    .entry(scope.clone())
+                    .or_insert_with(|| Arc::new(OnceLock::new())),
+            )
+        };
 
+        let mut i_won = false;
         let started = Instant::now();
-        let ctx = TaskContext::new(&loaded.dir, &loaded.config.name)
-            .with_toolchain_paths(toolchain_paths.to_vec());
-        let result = adapter.install(&ctx);
-        let duration_ms = started.elapsed().as_millis() as u64;
+        let result = slot.get_or_init(|| {
+            i_won = true;
+            tracing::info!(
+                dish = %loaded.config.name,
+                adapter = %adapter.id(),
+                scope = %scope.display(),
+                %reason,
+                "dependencies missing — running install"
+            );
+            let ctx = TaskContext::new(&scope, &loaded.config.name)
+                .with_toolchain_paths(toolchain_paths.to_vec());
+            adapter.install(&ctx).map_err(|e| format!("{e:#}"))
+        });
 
-        let error = result.err().map(|e| format!("{e:#}"));
+        if !i_won {
+            // Sibling dish in the same install scope ran install
+            // already. Successful → no record for us, our deps are
+            // populated. Failed → surface the same error so our tasks
+            // skip too.
+            return match result {
+                Ok(()) => None,
+                Err(e) => Some(InstallRecord {
+                    reason: format!(
+                        "shared install scope {} (handled by sibling)",
+                        scope.display()
+                    ),
+                    duration_ms: 0,
+                    error: Some(e.clone()),
+                }),
+            };
+        }
+
+        let duration_ms = started.elapsed().as_millis() as u64;
+        let error = result.as_ref().err().cloned();
         if let Some(e) = &error {
             tracing::warn!(
                 dish = %loaded.config.name,
@@ -4043,6 +4104,178 @@ run = "true"
         assert_eq!(install_calls.load(Ordering::SeqCst), 1);
         let install = report.bentos[0].dishes[0].install.as_ref().unwrap();
         assert_eq!(install.reason, "--force-install");
+    }
+
+    // ── Shared install-scope dedup ─────────────────────────────────
+
+    /// Mock adapter that returns a fixed `install_scope` regardless of
+    /// the per-dish `dir`. Simulates a JS workspace where multiple
+    /// dishes resolve to the same root.
+    struct SharedScopeMockAdapter {
+        probe: InstallProbe,
+        install_fails: bool,
+        install_calls: Arc<AtomicUsize>,
+        scope: PathBuf,
+    }
+
+    impl LanguageAdapter for SharedScopeMockAdapter {
+        fn id(&self) -> &str {
+            "shared-scope-mock"
+        }
+        fn detect(&self, _: &Path) -> bool {
+            false
+        }
+        fn fingerprint_files(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn required_toolchain(
+            &self,
+            _: &Path,
+        ) -> anyhow::Result<Option<bento_adapters::ToolVersion>> {
+            Ok(None)
+        }
+        fn install(&self, _: &bento_adapters::TaskContext) -> anyhow::Result<()> {
+            // Tiny sleep so concurrent callers actually pile into the
+            // OnceLock's blocking init path instead of one finishing
+            // before the next even reaches get_or_init.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.install_calls.fetch_add(1, Ordering::SeqCst);
+            if self.install_fails {
+                anyhow::bail!("boom");
+            }
+            Ok(())
+        }
+        fn install_probe(&self, _: &Path) -> InstallProbe {
+            self.probe.clone()
+        }
+        fn install_scope(&self, _: &Path) -> PathBuf {
+            self.scope.clone()
+        }
+        fn default_tasks(&self) -> Vec<bento_adapters::DefaultTask> {
+            Vec::new()
+        }
+    }
+
+    fn shared_scope_workspace() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "bento.toml", b"[defaults]\nparallelism = 4\n");
+        std::fs::create_dir(root.join("bentos")).unwrap();
+        write(
+            root,
+            "bentos/prod.toml",
+            br#"name = "prod"
+dishes = ["packages/a", "packages/b"]"#,
+        );
+        write(
+            root,
+            "packages/a/dish.toml",
+            br#"name = "a"
+language = "shared-scope-mock"
+
+[tasks.build]
+run = "true"
+"#,
+        );
+        write(
+            root,
+            "packages/b/dish.toml",
+            br#"name = "b"
+language = "shared-scope-mock"
+
+[tasks.build]
+run = "true"
+"#,
+        );
+        tmp
+    }
+
+    fn shared_scope_executor(
+        root: &Path,
+        probe: InstallProbe,
+        install_fails: bool,
+    ) -> (Executor, Arc<AtomicUsize>, tempfile::TempDir) {
+        let workspace = Workspace::load(root).unwrap();
+        let install_calls = Arc::new(AtomicUsize::new(0));
+        let registry = AdapterRegistry::empty().with_plugins([Box::new(SharedScopeMockAdapter {
+            probe,
+            install_fails,
+            install_calls: install_calls.clone(),
+            scope: root.to_path_buf(),
+        })
+            as Box<dyn LanguageAdapter>]);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = LocalCache::new(cache_dir.path());
+        (
+            Executor::new(workspace, registry, cache),
+            install_calls,
+            cache_dir,
+        )
+    }
+
+    #[test]
+    fn install_dedupes_across_dishes_in_shared_scope() {
+        // Two dishes in the same install scope (a JS workspace). Both
+        // probe Missing. The executor must serialise on the per-scope
+        // OnceLock so install runs exactly once, not once per dish —
+        // otherwise `bun install` / `pnpm install` race on the hoisted
+        // node_modules symlinks and one EEXIST-s.
+        let tmp = shared_scope_workspace();
+        let (exec, install_calls, _cache) =
+            shared_scope_executor(tmp.path(), InstallProbe::missing("deps absent"), false);
+        let report = exec.execute(&CiOptions::default()).unwrap();
+
+        assert_eq!(
+            install_calls.load(Ordering::SeqCst),
+            1,
+            "install should run exactly once per scope, not once per dish"
+        );
+        // Exactly one dish surfaces an InstallRecord (the winner);
+        // the sibling's `install` field is None because the winner's
+        // install already populated the scope's deps.
+        let dishes = &report.bentos[0].dishes;
+        let with_record = dishes.iter().filter(|d| d.install.is_some()).count();
+        assert_eq!(
+            with_record, 1,
+            "only the scope-winner dish should carry an install record"
+        );
+        // Both dishes' build tasks ran on top of the single install.
+        assert_eq!(report.summary.built, 2);
+    }
+
+    #[test]
+    fn shared_scope_install_failure_propagates_to_siblings() {
+        // Winner's install fails. The sibling must NOT attempt its own
+        // install (slot is poisoned with the error) and must skip its
+        // tasks rather than running against broken deps.
+        let tmp = shared_scope_workspace();
+        let (exec, install_calls, _cache) =
+            shared_scope_executor(tmp.path(), InstallProbe::missing("deps absent"), true);
+        let report = exec.execute(&CiOptions::default()).unwrap();
+
+        assert_eq!(
+            install_calls.load(Ordering::SeqCst),
+            1,
+            "failed install should not be retried by siblings"
+        );
+        // Both dishes carry an install record with an error — winner's
+        // is the original, sibling's is a synthetic shared-scope record.
+        let dishes = &report.bentos[0].dishes;
+        assert_eq!(dishes.len(), 2);
+        for d in dishes {
+            let rec = d
+                .install
+                .as_ref()
+                .unwrap_or_else(|| panic!("dish {} missing install record", d.name));
+            assert!(
+                rec.error.is_some(),
+                "dish {} should reflect the failed install",
+                d.name
+            );
+        }
+        // Neither dish ran tasks.
+        assert_eq!(report.summary.built, 0);
+        assert_eq!(report.summary.tasks, 0);
     }
 
     // ── Integration flow tests ─────────────────────────────────────
