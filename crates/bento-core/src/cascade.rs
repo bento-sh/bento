@@ -129,12 +129,35 @@ fn content_hash(
     hasher.update(b"bento-dish-content-v1");
     hasher.update(dish.name.as_bytes());
 
+    // The signature must cover the dish's *source*, which lives in
+    // task-level input globs (adapter defaults like `src/**` plus any
+    // `[tasks.<name>] inputs` overrides) — dish-level `inputs` is
+    // usually empty and `fingerprint_files()` is manifests only.
+    // Hashing just those two meant a dep's source edits never moved a
+    // dependent's task keys, so `bento ci` green-lit dependents from
+    // cache against code they never saw (reported downstream as
+    // gosho-app-8knj). Union, not per-task resolution: a superset of
+    // every resolved task's inputs is pessimistic-correct, which is
+    // this module's contract.
+    fn add_glob(globs: &mut Vec<String>, g: String) {
+        if !globs.contains(&g) {
+            globs.push(g);
+        }
+    }
     let mut globs: Vec<String> = dish.inputs.clone();
     if let Some(a) = adapter {
         for f in a.fingerprint_files() {
-            if !globs.contains(&f) {
-                globs.push(f);
+            add_glob(&mut globs, f);
+        }
+        for t in a.default_tasks() {
+            for g in t.inputs.unwrap_or_default() {
+                add_glob(&mut globs, g);
             }
+        }
+    }
+    for t in dish.tasks.values() {
+        for g in t.inputs.clone().unwrap_or_default() {
+            add_glob(&mut globs, g);
         }
     }
 
@@ -345,6 +368,117 @@ dishes = ["a", "b"]"#,
 
         let sigs = compute(&ws, &graph, &reg).unwrap();
         assert_ne!(sigs["a"], sigs["b"]);
+    }
+
+    #[test]
+    fn dep_source_matched_only_by_adapter_task_inputs_propagates() {
+        // The real-world shape of gosho-app-8knj: the dep is a language
+        // dish whose dish-level `inputs` is empty — its source is only
+        // covered by the adapter's default task inputs (src/**, **/*.py).
+        // Editing that source must move the dependent's signature.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("bentos")).unwrap();
+        std::fs::write(
+            root.join("bentos/prod.toml"),
+            r#"name = "prod"
+dishes = ["lib", "app"]"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join("lib/src")).unwrap();
+        std::fs::write(
+            root.join("lib/dish.toml"),
+            r#"name = "lib"
+language = "python""#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("lib/pyproject.toml"),
+            b"[project]\nname = \"lib\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("lib/src/lib.py"), b"X = 1\n").unwrap();
+
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(
+            root.join("app/dish.toml"),
+            r#"name = "app"
+depends_on = ["lib"]
+inputs = ["src.txt"]"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("app/src.txt"), b"app-v1").unwrap();
+
+        let ws = Workspace::load(root).unwrap();
+        let graph = build_graph(&ws, "prod").unwrap();
+        let reg = AdapterRegistry::builtin();
+
+        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        std::fs::write(root.join("lib/src/lib.py"), b"X = 2\n").unwrap();
+        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+
+        assert_ne!(
+            sigs_before["lib"], sigs_after["lib"],
+            "adapter task-input source must feed the dep's own signature"
+        );
+        assert_ne!(
+            sigs_before["app"], sigs_after["app"],
+            "dependent must see a new signature when dep source (matched only \
+             by adapter task inputs) changes"
+        );
+    }
+
+    #[test]
+    fn dep_source_matched_only_by_task_input_override_propagates() {
+        // Same failure class via `[tasks.<name>] inputs = [...]` declared
+        // in dish.toml rather than an adapter default.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("bentos")).unwrap();
+        std::fs::write(
+            root.join("bentos/prod.toml"),
+            r#"name = "prod"
+dishes = ["lib", "app"]"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join("lib/data")).unwrap();
+        std::fs::write(
+            root.join("lib/dish.toml"),
+            r#"name = "lib"
+
+[tasks.build]
+run = "true"
+inputs = ["data/**"]"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("lib/data/seed.txt"), b"v1").unwrap();
+
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(
+            root.join("app/dish.toml"),
+            r#"name = "app"
+depends_on = ["lib"]
+inputs = ["src.txt"]"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("app/src.txt"), b"app-v1").unwrap();
+
+        let ws = Workspace::load(root).unwrap();
+        let graph = build_graph(&ws, "prod").unwrap();
+        let reg = AdapterRegistry::builtin();
+
+        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        std::fs::write(root.join("lib/data/seed.txt"), b"v2").unwrap();
+        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+
+        assert_ne!(sigs_before["lib"], sigs_after["lib"]);
+        assert_ne!(
+            sigs_before["app"], sigs_after["app"],
+            "dependent must see a new signature when dep source (matched only \
+             by a [tasks.*] inputs override) changes"
+        );
     }
 
     #[test]
