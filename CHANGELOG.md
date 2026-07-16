@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`depends_on` dep signatures now cover the dep's source, not just its manifests.** The cascade's per-dish content hash built its glob set from dish-level `inputs` (usually empty) plus the adapter's `fingerprint_files()` (manifests/lockfiles only) — the dep's actual source lives in task-level input globs (adapter defaults like `src/**`, `**/*.py`, plus `[tasks.<name>] inputs` overrides), which the signature never consulted. Editing a dependency's source therefore never moved a dependent's task keys, and `bento ci` green-lit dependents from cache against code they never saw. Reported downstream by gosho-io/gosho-app (umbrella dish depending on eight sibling dishes; `bento ci --bento api` returned 35/35 cache hits after real edits in a dep's `src/`). The dish signature now unions all task-level input globs — a superset of every resolved task's inputs, matching the module's pessimistic-correct contract. Existing cache entries for dishes with `depends_on` are invalidated once by the key change; independent dishes keep their keys.
+
 ## [0.1.2] - 2026-05-17
 
 Single-fix patch driven by a downstream consumer hitting a parallel-install symlink race on a bun workspace deploy. CI had been passing — deploy's higher effective concurrency was the only thing that opened the race window wide enough for the symlink-creation step to collide. The dedup primitive (`LanguageAdapter::install_scope`) generalises beyond the four node-family adapters; future adapters with shared install side effects can opt in by overriding the trait method.
