@@ -22,13 +22,19 @@ jobs:
   # ── Preflight ──────────────────────────────────────────────────────
   #
   # Re-runs the same gates `ci.yml` runs, on the exact tagged commit,
-  # before any release artefact is built. Closes the "tag-push fires
-  # release.yml in parallel with CI/E2E" gap: nothing publishes unless
-  # the tag's commit passes fmt + clippy + tests at release time.
+  # before any release artefact is built. Defensive sanity check that
+  # the tagged SHA still passes fmt + clippy + unit tests.
   #
-  # Costs ~2-3 minutes; the build matrix needs `needs: preflight` so it
-  # waits. Tag-push CI on the same commit is still useful as an
-  # independent signal but is no longer load-bearing for the release.
+  # The heavier e2e full-matrix is NOT in this workflow — it runs on
+  # every push to main (`e2e.yml`'s full-matrix job), so by the time
+  # you tag, main is already green on the full toolchain matrix.
+  # Putting full-matrix here too would just duplicate that signal at
+  # release time. The release flow trusts main's green state.
+  #
+  # Implication: tag from a commit that's already on main AND has
+  # passed full-matrix. The version-bump commit (`chore(release):
+  # vX.Y.Z`) is itself a main commit, so push it and wait for the
+  # main full-matrix run to go green before pushing the tag.
   preflight:
     name: preflight (fmt + clippy + tests on tagged commit)
     runs-on: ubuntu-latest

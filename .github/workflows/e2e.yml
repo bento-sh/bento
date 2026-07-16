@@ -1,40 +1,34 @@
 name: E2E
 
-# Dedicated workflow for the end-to-end test suite. Separate from
-# `ci.yml` (unit + clippy + fmt + cross-build) because e2e is:
-#   - Fatter: installs every toolchain, pulls container images.
-#   - Slower: the release-profile bento binary + real `go build` /
-#     `pnpm install` / `cargo build` / ... per fixture.
-#   - Higher-variance: toolchain-installer flakiness, public registry
-#     pulls. Keeping it separate means `ci.yml` stays the badge that
-#     gates merges; this workflow surfaces richer regressions.
+# End-to-end test suite. Two jobs, mutually exclusive on event:
+#
+#   - `pr-smoke` runs on every PR. Small toolchain footprint (Go +
+#     Node + docker), no network-gated tests. Target < 2 min so PR
+#     authors get fast feedback.
+#
+#   - `full-matrix` runs on every push to main. Installs every
+#     toolchain bento ships an adapter for and sets
+#     BENTO_E2E_NETWORK=1 so the network-gated recipes execute
+#     rather than emitting skip markers. This is the green-state
+#     signal `release.yml` relies on: tag a commit that's already
+#     gone green on main full-matrix and the release flow doesn't
+#     need to re-run the matrix.
+#
+# Separate from `ci.yml` (unit + clippy + fmt + cross-build) because
+# e2e is fatter, slower, and higher-variance — keeping the badges
+# split means `ci.yml` stays the merge gate while this workflow
+# surfaces richer regressions.
 
 on:
   push:
     branches: [main]
-    # Patch tags + prereleases only — floating major-minor tags
-    # (`v0.1`, `v1.0`) are retargeted by `release.yml` after the
-    # patch publishes and shouldn't re-trigger full-matrix.
-    tags: ['v*.*.*']
   pull_request:
-  # Manual trigger for full-matrix without cutting a tag — lets us
-  # exercise the expensive job after fixing a regression without
-  # bumping the release train.
-  workflow_dispatch:
-    inputs:
-      full_matrix:
-        description: 'Run full-matrix (ignore tag gate)'
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 # Cancel in-flight runs for the same ref when a new push lands —
-# saves runner minutes on rapid iteration. Tag pushes still keep
-# their own concurrency group via `${{ github.ref }}` so releases
-# never cancel each other; only ref-on-ref pushes (e.g. consecutive
-# main commits) interrupt their predecessor.
+# saves runner minutes on rapid iteration.
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -43,17 +37,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── PR gate ────────────────────────────────────────────────────
-  # Runs on every PR + push to main. Small toolchain footprint (Go +
-  # Node + docker); tests for other ecosystems skip cleanly via
-  # `require_toolchain`. No network-gated tests. Target < 2 min so
-  # PR authors get fast feedback.
   pr-smoke:
     name: e2e smoke
+    # PR-only. Post-merge coverage on main lives in `full-matrix`
+    # below, which exercises a strict superset of what smoke covers.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Skip on tag pushes — full-matrix below covers those and this
-    # job would redundantly re-run a subset.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -86,16 +75,13 @@ jobs:
       - name: cargo test --release --test e2e
         run: cargo test --release --test e2e --locked
 
-  # ── Full matrix ────────────────────────────────────────────────
-  # Runs on tag pushes only. Installs every toolchain the harness
-  # knows about so no ecosystem skips, plus BENTO_E2E_NETWORK=1 so
-  # the network-gated recipes (ruby / python-build / maven / gradle)
-  # actually execute rather than emitting skip markers. Sole signal
-  # we want before cutting a release.
   full-matrix:
     name: e2e full-matrix
+    # Main pushes only. PR coverage lives in `pr-smoke` above (fast,
+    # narrower toolchain set); release.yml trusts main's green state
+    # on this job rather than re-running the matrix at tag time.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.full_matrix)
     env:
       BENTO_E2E_NETWORK: '1'
     steps:
