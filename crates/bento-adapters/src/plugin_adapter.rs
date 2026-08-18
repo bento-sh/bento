@@ -340,8 +340,11 @@ fn wire_toolversion_to_trait(v: WireToolVersion) -> ToolVersion {
 
 /// Forwards `notifications/log` from a plugin's `install` call to the
 /// user's terminal. Tool-subprocess output (`stream = stdout|stderr`) is
-/// passed through verbatim; plugin-internal logs are routed through
-/// `tracing` with the adapter as a target tag so they're filterable.
+/// passed through verbatim on **stderr** — bento's own stdout is a data
+/// channel (`--json`, and the MCP server's JSON-RPC wire), so anything
+/// a plugin prints there corrupts it. Plugin-internal logs are routed
+/// through `tracing` with the adapter as a target tag so they're
+/// filterable.
 struct PrintNotifier {
     adapter_id: String,
 }
@@ -349,8 +352,7 @@ struct PrintNotifier {
 impl Notifier for PrintNotifier {
     fn on_log(&mut self, params: &LogParams) {
         match params.stream {
-            Some(LogStream::Stdout) => print!("{}", params.message),
-            Some(LogStream::Stderr) => eprint!("{}", params.message),
+            Some(LogStream::Stdout) | Some(LogStream::Stderr) => eprint!("{}", params.message),
             None => match params.level {
                 LogLevel::Error => {
                     tracing::error!(target: "bento.plugin", adapter = %self.adapter_id, "{}", params.message)

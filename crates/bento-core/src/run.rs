@@ -2688,7 +2688,7 @@ pub fn ci_at(root: impl AsRef<Path>, opts: &CiOptions) -> Result<ExecutionReport
     let root = root.as_ref();
     let workspace = Workspace::load(root)
         .with_context(|| format!("loading workspace at {}", root.display()))?;
-    let registry = AdapterRegistry::builtin();
+    let registry = crate::build_registry(&workspace);
     let integrations = IntegrationRegistry::builtin();
     let cache = LocalCache::new(crate::plan::default_cache_root()?);
     Executor::new(workspace, registry, cache)
@@ -2705,7 +2705,7 @@ pub fn notify_at(root: impl AsRef<Path>, opts: &CiOptions) -> Result<ExecutionRe
     let root = root.as_ref();
     let workspace = Workspace::load(root)
         .with_context(|| format!("loading workspace at {}", root.display()))?;
-    let registry = AdapterRegistry::builtin();
+    let registry = crate::build_registry(&workspace);
     let integrations = IntegrationRegistry::builtin();
     let cache = LocalCache::new(crate::plan::default_cache_root()?);
     Executor::new(workspace, registry, cache)

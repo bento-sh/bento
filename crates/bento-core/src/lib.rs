@@ -16,6 +16,7 @@ pub mod garnish;
 pub mod graph;
 pub mod inventory;
 pub mod plan;
+pub mod plugins;
 pub mod prime;
 pub mod report;
 pub mod run;
@@ -31,6 +32,7 @@ pub use plan::{
     default_cache_root, find_workspace_root, plan_at, MissReason, Plan, PlanOptions, PlannedBento,
     PlannedDish, PlannedTask, Planner, TaskStatus, WorkspaceNotFound,
 };
+pub use plugins::build_registry;
 pub use run::{
     ci_at, notify_at, pinned_path_env, resolve_target, CiOptions, ExecutedBento, ExecutedDish,
     ExecutedTask, ExecutionReport, ExecutionSummary, Executor, InstallRecord, TargetRef,

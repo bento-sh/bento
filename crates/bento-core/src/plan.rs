@@ -966,13 +966,14 @@ pub fn default_cache_root() -> Result<PathBuf> {
     Ok(home.join(".bento").join("cache"))
 }
 
-/// Load a workspace at `root`, wire up the built-in adapter registry and
-/// default cache, run the planner, and return the [`Plan`].
+/// Load a workspace at `root`, wire up the adapter registry (built-ins
+/// plus discovered subprocess plugins) and default cache, run the
+/// planner, and return the [`Plan`].
 pub fn plan_at(root: impl AsRef<Path>, opts: &PlanOptions) -> Result<Plan> {
     let root = root.as_ref();
     let workspace = Workspace::load(root)
         .with_context(|| format!("loading workspace at {}", root.display()))?;
-    let registry = AdapterRegistry::builtin();
+    let registry = crate::build_registry(&workspace);
     let integrations = IntegrationRegistry::builtin();
     let cache = LocalCache::new(default_cache_root()?);
 
