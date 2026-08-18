@@ -67,8 +67,7 @@ impl LanguageAdapter for PythonUvAdapter {
     }
 
     fn required_toolchain(&self, dir: &Path) -> Result<Option<ToolVersion>> {
-        let dot = dir.join(".python-version");
-        if dot.is_file() {
+        if let Some(dot) = crate::adapter::find_up(dir, ".python-version") {
             let raw = std::fs::read_to_string(&dot)
                 .with_context(|| format!("reading {}", dot.display()))?;
             let line = raw.lines().next().unwrap_or("").trim();

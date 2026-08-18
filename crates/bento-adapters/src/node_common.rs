@@ -29,11 +29,15 @@ use crate::tool_versions;
 /// the `tool` name they want on the returned [`ToolVersion`] (`"node"`
 /// for npm/pnpm/yarn, `"bun"` for bun — bun reads `.bun-version` directly).
 pub fn resolve_node_version(dir: &Path, tool: &'static str) -> Result<Option<ToolVersion>> {
-    if let Some(v) = read_version_file(&dir.join(".nvmrc"))? {
-        return Ok(Some(tool_version(tool, v)));
+    if let Some(path) = crate::adapter::find_up(dir, ".nvmrc") {
+        if let Some(v) = read_version_file(&path)?.and_then(resolve_nvm_alias) {
+            return Ok(Some(tool_version(tool, v)));
+        }
     }
-    if let Some(v) = read_version_file(&dir.join(".node-version"))? {
-        return Ok(Some(tool_version(tool, v)));
+    if let Some(path) = crate::adapter::find_up(dir, ".node-version") {
+        if let Some(v) = read_version_file(&path)? {
+            return Ok(Some(tool_version(tool, v)));
+        }
     }
     if let Some(v) = tool_versions::read_tool_version(dir, &["nodejs", "node"])? {
         return Ok(Some(tool_version(tool, v)));
@@ -63,6 +67,36 @@ pub fn read_version_file(path: &Path) -> Result<Option<String>> {
     }
     // `.nvmrc` convention allows `v22.1.0` or `22.1.0`; accept both.
     Ok(Some(line.strip_prefix('v').unwrap_or(line).to_string()))
+}
+
+/// `.nvmrc` may hold an nvm alias rather than a version. `lts/*`,
+/// `node`, `latest` and `stable` all name a moving target — keeping them
+/// as the pin would hash a string that means something different next
+/// month and hand the toolchain resolver a version it can't install — so
+/// they resolve to "no pin" and the next source gets its turn.
+/// `lts/<codename>` does name a fixed major, so those map through.
+fn resolve_nvm_alias(raw: String) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    if let Some(codename) = lower.strip_prefix("lts/") {
+        return match codename {
+            "argon" => Some("4"),
+            "boron" => Some("6"),
+            "carbon" => Some("8"),
+            "dubnium" => Some("10"),
+            "erbium" => Some("12"),
+            "fermium" => Some("14"),
+            "gallium" => Some("16"),
+            "hydrogen" => Some("18"),
+            "iron" => Some("20"),
+            "jod" => Some("22"),
+            _ => None,
+        }
+        .map(str::to_string);
+    }
+    match lower.as_str() {
+        "node" | "latest" | "stable" => None,
+        _ => Some(raw),
+    }
 }
 
 pub fn tool_version(tool: &'static str, version: String) -> ToolVersion {
@@ -582,6 +616,50 @@ mod tests {
         std::fs::write(tmp.path().join(".nvmrc"), "v22.1.0\n").unwrap();
         let v = resolve_node_version(tmp.path(), "node").unwrap().unwrap();
         assert_eq!(v.version, "22.1.0");
+    }
+
+    #[test]
+    fn nvmrc_lts_codename_maps_to_its_major() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".nvmrc"), "lts/iron\n").unwrap();
+        let v = resolve_node_version(tmp.path(), "node").unwrap().unwrap();
+        assert_eq!(v.version, "20");
+    }
+
+    #[test]
+    fn nvmrc_floating_alias_falls_through_to_the_next_source() {
+        for alias in ["lts/*", "node", "latest", "lts/unreleased-codename"] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join(".nvmrc"), format!("{alias}\n")).unwrap();
+            std::fs::write(
+                tmp.path().join("package.json"),
+                r#"{"engines":{"node":">=20"}}"#,
+            )
+            .unwrap();
+            let v = resolve_node_version(tmp.path(), "node").unwrap().unwrap();
+            assert_eq!(v.version, ">=20", "alias {alias} should not become a pin");
+        }
+    }
+
+    #[test]
+    fn pin_files_resolve_from_the_workspace_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bento.toml"), "").unwrap();
+        std::fs::write(tmp.path().join(".nvmrc"), "22.1.0\n").unwrap();
+        let member = tmp.path().join("packages/web");
+        std::fs::create_dir_all(&member).unwrap();
+        let v = resolve_node_version(&member, "node").unwrap().unwrap();
+        assert_eq!(v.version, "22.1.0");
+    }
+
+    #[test]
+    fn pin_lookup_stops_at_the_workspace_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".nvmrc"), "18.0.0\n").unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("bento.toml"), "").unwrap();
+        assert!(resolve_node_version(&repo, "node").unwrap().is_none());
     }
 
     #[test]

@@ -12,14 +12,17 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Read `<dir>/.tool-versions` and return the version string for the
-/// first alias that matches a line. Returns `Ok(None)` when the file is
-/// absent or the tool isn't listed.
+/// Read the nearest `.tool-versions` at or above `dir` and return the
+/// version string for the first alias that matches a line. Returns
+/// `Ok(None)` when there is no such file or the tool isn't listed.
+///
+/// asdf / mise both resolve `.tool-versions` by walking up, and a
+/// monorepo commits one at the root for every package — reading only the
+/// dish dir found it in approximately no real repo.
 pub fn read_tool_version(dir: &Path, aliases: &[&str]) -> Result<Option<String>> {
-    let path = dir.join(".tool-versions");
-    if !path.is_file() {
+    let Some(path) = crate::adapter::find_up(dir, ".tool-versions") else {
         return Ok(None);
-    }
+    };
     let raw =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     Ok(parse_tool_version(&raw, aliases))
@@ -114,5 +117,17 @@ mod tests {
         let dir = tmp_with_file(".tool-versions", "nodejs 22.1.0\n");
         let v = read_tool_version(dir.path(), &["nodejs"]).unwrap();
         assert_eq!(v, Some("22.1.0".into()));
+    }
+
+    #[test]
+    fn read_walks_up_to_the_workspace_root() {
+        let dir = tmp_with_file(".tool-versions", "ruby 3.2.2\n");
+        std::fs::write(dir.path().join("bento.toml"), "").unwrap();
+        let dish = dir.path().join("services/api");
+        std::fs::create_dir_all(&dish).unwrap();
+        assert_eq!(
+            read_tool_version(&dish, &["ruby"]).unwrap(),
+            Some("3.2.2".into())
+        );
     }
 }

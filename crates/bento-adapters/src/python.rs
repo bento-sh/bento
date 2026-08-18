@@ -68,8 +68,9 @@ impl LanguageAdapter for PythonAdapter {
 
     fn required_toolchain(&self, dir: &Path) -> Result<Option<ToolVersion>> {
         // 1. `.python-version` — pyenv convention, honoured by uv/rye.
-        let dot = dir.join(".python-version");
-        if dot.is_file() {
+        // pyenv resolves it by walking up; a monorepo commits one at the
+        // root for every package.
+        if let Some(dot) = crate::adapter::find_up(dir, ".python-version") {
             let raw = std::fs::read_to_string(&dot)
                 .with_context(|| format!("reading {}", dot.display()))?;
             let line = raw.lines().next().unwrap_or("").trim();

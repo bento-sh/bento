@@ -141,6 +141,31 @@ impl TaskContext {
     }
 }
 
+/// First file named `name` in `dir` or any ancestor of it.
+///
+/// Toolchain pins (`.nvmrc`, `.tool-versions`, `rust-toolchain.toml`,
+/// `.python-version`) are almost always committed once at the repo root
+/// and inherited by every package — reading only the dish dir meant a
+/// monorepo's pin applied to nothing.
+///
+/// The walk stops at the repo root: a dir holding `.git` or `bento.toml`
+/// is the last one checked, so we never pick up a pin from outside the
+/// workspace or from the user's home directory.
+pub(crate) fn find_up(dir: &Path, name: &str) -> Option<PathBuf> {
+    let mut current = Some(dir);
+    while let Some(d) = current {
+        let candidate = d.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if d.join(".git").exists() || d.join("bento.toml").is_file() {
+            break;
+        }
+        current = d.parent();
+    }
+    None
+}
+
 /// Run an install-style package-manager command with stdio captured
 /// so it can't pollute bento's own stdout (which, under `--json`,
 /// must stay parseable machine output). On success the captured

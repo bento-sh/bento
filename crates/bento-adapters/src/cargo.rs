@@ -47,8 +47,9 @@ impl LanguageAdapter for CargoAdapter {
 
     fn required_toolchain(&self, dir: &Path) -> Result<Option<ToolVersion>> {
         // Preferred: `rust-toolchain.toml` under `[toolchain] channel = ...`.
-        let toml_path = dir.join("rust-toolchain.toml");
-        if toml_path.is_file() {
+        // rustup itself resolves these by walking up from the cwd, and a
+        // workspace commits one at the root, so we do too.
+        if let Some(toml_path) = crate::adapter::find_up(dir, "rust-toolchain.toml") {
             let raw = std::fs::read_to_string(&toml_path)
                 .with_context(|| format!("reading {}", toml_path.display()))?;
             if let Some(channel) = parse_toolchain_toml(&raw) {
@@ -59,8 +60,7 @@ impl LanguageAdapter for CargoAdapter {
             }
         }
         // Legacy single-line file: just a channel name, e.g. "1.75.0" or "stable".
-        let legacy = dir.join("rust-toolchain");
-        if legacy.is_file() {
+        if let Some(legacy) = crate::adapter::find_up(dir, "rust-toolchain") {
             let raw = std::fs::read_to_string(&legacy)
                 .with_context(|| format!("reading {}", legacy.display()))?;
             let line = raw.lines().next().unwrap_or("").trim();
@@ -194,17 +194,7 @@ impl LanguageAdapter for CargoAdapter {
 /// carry their own — the lock sits next to the workspace-root
 /// `Cargo.toml` — so walk up, bounded at the repo root.
 fn has_lockfile(dir: &Path) -> bool {
-    let mut current = Some(dir);
-    while let Some(d) = current {
-        if d.join("Cargo.lock").is_file() {
-            return true;
-        }
-        if d.join(".git").exists() || d.join("bento.toml").is_file() {
-            break;
-        }
-        current = d.parent();
-    }
-    false
+    crate::adapter::find_up(dir, "Cargo.lock").is_some()
 }
 
 /// Pluck `toolchain.channel` out of a `rust-toolchain.toml`. Accepts the

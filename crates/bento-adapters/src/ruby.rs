@@ -53,12 +53,14 @@ impl LanguageAdapter for RubyAdapter {
         // `ruby-3.2.2`; rbenv writes the bare version. Strip the prefix
         // so both cache-key and resolve identically. Other engines
         // (`jruby-9.4.0.0`) keep their prefix — it's part of the pin.
-        if let Some(v) = read_first_nonempty_line(&dir.join(".ruby-version"))? {
-            let v = v.strip_prefix("ruby-").unwrap_or(&v).to_string();
-            return Ok(Some(ToolVersion {
-                tool: "ruby".into(),
-                version: v,
-            }));
+        if let Some(path) = crate::adapter::find_up(dir, ".ruby-version") {
+            if let Some(v) = read_first_nonempty_line(&path)? {
+                let v = v.strip_prefix("ruby-").unwrap_or(&v).to_string();
+                return Ok(Some(ToolVersion {
+                    tool: "ruby".into(),
+                    version: v,
+                }));
+            }
         }
         // 2. `ruby "x.y.z"` directive in Gemfile.
         let gemfile = dir.join("Gemfile");
