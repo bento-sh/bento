@@ -146,6 +146,46 @@ jobs:
           fi
           echo "report contains backend + frontend ✓"
 
+      # A `bento://` remote with no token makes bento disable the remote
+      # tier with a log line nobody reads — the bug this warning exists
+      # to prevent. Driving run.sh directly (bento is on PATH from the
+      # action's install step) is the only way to grep the phase's own
+      # output: a composite step's log isn't reachable from the caller.
+      - name: Warn when a bento:// remote has no cache-token
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BENTO_TASK: build
+          BENTO_JSON: 'false'
+          # cache-token: '' — the input is simply absent here.
+          BENTO_CACHE_TOKEN_INPUT: ''
+          REPORT_FILE: ${{ runner.temp }}/bento-report-cache-warn.json
+          # Own file so the summary assertion is about *this* run, not
+          # the one the action step above already appended.
+          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/cache-warn-summary.md
+        run: |
+          ws="${RUNNER_TEMP}/fixture-bento-remote"
+          rm -rf "$ws"
+          cp -R tests/e2e/fixtures/monorepo-go-node "$ws"
+          printf '\n[cache]\nremote = "bento://cache.bento.build"\nremote_token_env = "BENTO_CACHE_TOKEN"\n' >> "$ws/bento.toml"
+          log="${RUNNER_TEMP}/cache-warn.log"
+          status=0
+          (cd "$ws" && bash "${GITHUB_WORKSPACE}/scripts/action/run.sh" execute) > "$log" 2>&1 || status=$?
+          cat "$log"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::run.sh execute failed (exit $status) — a tokenless bento:// remote must not break the run" >&2
+            exit 1
+          fi
+          if ! grep -q '^::warning::\[cache\] remote = "bento://cache.bento.build" is configured but .* is empty' "$log"; then
+            echo "::error::expected a ::warning:: about the missing cache token" >&2
+            exit 1
+          fi
+          if ! grep -q '^### bento — ' "$GITHUB_STEP_SUMMARY"; then
+            echo "::error::execute phase did not append a job summary" >&2
+            exit 1
+          fi
+          echo "tokenless bento:// remote warns, run still green, job summary written ✓"
+
   smoke-source:
     name: smoke (source build, ubuntu)
     runs-on: ubuntu-latest

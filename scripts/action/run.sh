@@ -13,7 +13,7 @@ set -euo pipefail
 
 PHASE="${1:-}"
 if [ -z "$PHASE" ]; then
-    echo "usage: run.sh <install-bento|install-toolchains|preflight|execute>" >&2
+    echo "usage: run.sh <install-bento|install-toolchains|preflight|execute|summarize>" >&2
     exit 2
 fi
 
@@ -198,18 +198,19 @@ phase_install_toolchains() {
     exit "$install_exit"
 }
 
-# Read a `<key> = "<value>"` line out of bento.toml's `[toolchain]`
-# block. Echoes the value (no quotes) or nothing if absent. Tolerates
-# whitespace; ignores commented-out lines. Pure bash so it works on
-# both Linux + macOS runners (no GNU-awk dependency).
-read_toolchain_pin() {
-    local key="$1"
+# Read a `<key> = "<value>"` line out of a `[<section>]` block in
+# bento.toml. Echoes the value (no quotes) or nothing if absent.
+# Tolerates whitespace; ignores commented-out lines. Pure bash so it
+# works on both Linux + macOS runners (no GNU-awk dependency).
+read_toml_value() {
+    local section="$1"
+    local key="$2"
     local file="bento.toml"
     [ -f "$file" ] || return 0
 
     local in_block=0 line
     while IFS= read -r line; do
-        if [[ "$line" =~ ^[[:space:]]*\[toolchain\][[:space:]]*$ ]]; then
+        if [[ "$line" =~ ^[[:space:]]*\[${section}\][[:space:]]*$ ]]; then
             in_block=1
             continue
         fi
@@ -234,7 +235,7 @@ bootstrap_external_toolchains() {
     # tracked separately for proper BunTool / DenoTool support in
     # bento-toolchain (needs zip-archive support).
     local bun_version
-    bun_version="$(read_toolchain_pin bun || true)"
+    bun_version="$(read_toml_value toolchain bun || true)"
 
     if [ -n "$bun_version" ]; then
         if ! command -v bun >/dev/null 2>&1; then
@@ -295,6 +296,75 @@ install_bun() {
     "$install_dir/bin/bun" --version
 }
 
+# Put the remote-cache JWT where bento looks for it, and warn about the
+# silent-no-op case: a `bento://` remote with no token resolvable makes
+# bento disable the remote tier with a `tracing::warn!` nobody reads, so
+# laptops (which have a `bento login` keychain entry) get hits and CI
+# gets none.
+#
+# The `cache-token` input can't bind straight to `BENTO_CACHE_TOKEN` in
+# action.yml: a step-level `env:` entry with an empty value shadows the
+# caller's own export, so an unset input would *unset* a token the
+# workflow already provided. It arrives under `_INPUT` instead and only
+# overrides when non-empty.
+setup_cache_token() {
+    local token_env
+    token_env="$(read_toml_value cache remote_token_env)"
+    # Unset or not an identifier → the default. `export "$name=…"` and
+    # `${!name}` both abort the shell on a malformed name, and a typo in
+    # bento.toml shouldn't take the job down with it.
+    [[ "$token_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || token_env="BENTO_CACHE_TOKEN"
+
+    if [ -n "${BENTO_CACHE_TOKEN_INPUT:-}" ]; then
+        export BENTO_CACHE_TOKEN="$BENTO_CACHE_TOKEN_INPUT"
+        # A repo that renamed the var via `remote_token_env` reads only
+        # that name — exporting the default alone would be another
+        # silent miss.
+        export "$token_env=$BENTO_CACHE_TOKEN_INPUT"
+    fi
+
+    local remote
+    remote="$(read_toml_value cache remote)"
+    case "$remote" in
+        bento://*) ;;
+        *) return 0 ;;
+    esac
+
+    if [ -z "${!token_env:-}" ]; then
+        echo "::warning::[cache] remote = \"$remote\" is configured but \$${token_env} is empty — bento will skip the remote cache tier for this run. Pass cache-token: \${{ secrets.BENTO_CACHE_TOKEN }} to the action (get the JWT from \`bento login\` or the dashboard)."
+    fi
+}
+
+# Render a markdown job summary for an ExecutionReport (the
+# `--report-file` JSON, pretty-printed) on stdout. Split out as its own
+# phase so scripts/action/test_summary.sh can exercise it without a
+# runner.
+summarize() {
+    jq -r '
+      def secs: (. / 100 | round) / 10;
+      (.summary // {}) as $s
+      | [ .bentos[]?.dishes[]? | .name as $dish | .tasks[]?
+          | { dish: $dish,
+              task: (.name // ""),
+              outcome: (.outcome.kind // "unknown"),
+              key: (.key // ""),
+              ms: (.duration_ms // 0),
+              err: (.outcome.stderr_excerpt // "") } ] as $rows
+      | [ "### bento — \($s.tasks // 0) tasks · \($s.hits // 0) cached · \($s.built // 0) built · \($s.failed // 0) failed · \(($s.duration_ms // 0) | secs)s", "" ]
+      + ( if ($rows | length) == 0 then []
+          else [ "| dish | task | outcome | key | duration_ms |", "|---|---|---|---|---|" ]
+             + ( $rows[:50] | map("| \(.dish) | \(.task) | \(.outcome) | `\(.key[:12])` | \(.ms) |") )
+             + ( if ($rows | length) > 50
+                 then [ "", "…and \(($rows | length) - 50) more" ]
+                 else [] end )
+          end )
+      + ( [ $rows[] | select(.outcome == "failed") ]
+          | map([ "", "**\(.dish) · \(.task)**", "", "```", (.err | .[0:1000]), "```" ])
+          | add // [] )
+      | .[]
+    ' "$1"
+}
+
 phase_preflight() {
     BENTO_ARGS=("doctor")
     if [ -n "${BENTO_ENV:-}" ]; then
@@ -305,6 +375,7 @@ phase_preflight() {
 }
 
 phase_execute() {
+    setup_cache_token
     build_bento_args
 
     # --report-file always set so the `report` step output is
@@ -328,6 +399,18 @@ phase_execute() {
         publish_output "report" "$report"
     fi
 
+    # Counters + job summary. Best-effort: jq ships on every GitHub
+    # runner but self-hosted boxes may lack it, and an unparseable
+    # report must not turn a green run red.
+    if [ -f "$REPORT_FILE" ] && command -v jq >/dev/null 2>&1; then
+        publish_output "cache-hits"   "$(jq -r '.summary.hits   // 0' "$REPORT_FILE" 2>/dev/null || echo 0)"
+        publish_output "cache-misses" "$(jq -r '.summary.built  // 0' "$REPORT_FILE" 2>/dev/null || echo 0)"
+        publish_output "failed"       "$(jq -r '.summary.failed // 0' "$REPORT_FILE" 2>/dev/null || echo 0)"
+        if [ "${BENTO_JOB_SUMMARY:-true}" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            summarize "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY" || true
+        fi
+    fi
+
     # `artifacts` output: best-effort. Never fail the build; always
     # publish valid JSON so downstream `jq` doesn't choke.
     local artifacts
@@ -346,8 +429,9 @@ case "$PHASE" in
     install-toolchains)  phase_install_toolchains ;;
     preflight)           phase_preflight ;;
     execute)             phase_execute ;;
+    summarize)           summarize "${2:?usage: run.sh summarize <report.json>}" ;;
     *)
-        echo "::error::unknown phase '$PHASE' (expected: install-bento, install-toolchains, preflight, execute)" >&2
+        echo "::error::unknown phase '$PHASE' (expected: install-bento, install-toolchains, preflight, execute, summarize)" >&2
         exit 2
         ;;
 esac

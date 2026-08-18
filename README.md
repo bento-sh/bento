@@ -295,6 +295,8 @@ The bento version doesn't just *look* shorter — it actually does more: every t
 | `rollback` | For `task: deploy` — roll back to the previous deploy. Mutually exclusive with `preview`. |
 | `workspace-path` | Directory containing `bento.toml` and `bentos/` (default: checkout root). |
 | `json` | Emit the execution report to stdout / workflow outputs as JSON. |
+| `cache-token` | JWT for the hosted remote cache (`[cache] remote = "bento://…"`). Store it as a repo secret — without it, a workspace configured for the hosted cache silently uses only the local + `actions/cache` tiers. |
+| `job-summary` | When `true` (default), append a run summary to the job's step summary page. |
 | `cache-key-suffix` | Bump to force a cold cache after a bento version upgrade. |
 | `source-path` | Path to a bento Cargo workspace — used as a fallback when `version` is empty. |
 | `install-toolchains` | When `true` (default), action runs `bento toolchain install` and caches `~/.bento/tools/`. Set `false` to chain `actions/setup-*` yourself. |
@@ -304,7 +306,46 @@ The bento version doesn't just *look* shorter — it actually does more: every t
 | `report` | Full ExecutionReport JSON — task results, cache hit/miss, durations. Always set. Same shape as `bento ci --json`; canonical schema from `bento schema report`. |
 | `artifacts` | JSON object `{dish_name: [absolute_paths...]}` resolved from each dish's `[outputs]` after the run. Pipe to `jq` from a downstream step (Docker, upload-artifact, release). |
 | `toolchains-installed` | JSON listing toolchains the action fetched. Set when `install-toolchains: true`. Same shape as `bento toolchain install --json`. |
+| `cache-hits` / `cache-misses` / `failed` | Task counts from the run (`summary.hits` / `summary.built` / `summary.failed`). Cheap to gate a downstream step on without parsing `report`. |
 | `json` | Same content as `report`, set only when `json: true`. Kept for back-compat. |
+
+### Remote cache in CI
+
+The action always wraps `~/.bento/cache` in `actions/cache`. If your
+`bento.toml` also points at the hosted cache, hand the action the token —
+otherwise the remote tier is skipped and CI quietly rebuilds what every
+laptop got from cache:
+
+```yaml
+- uses: bento-sh/bento@v0.1
+  with:
+    version: '0.1.0'
+    cache-token: ${{ secrets.BENTO_CACHE_TOKEN }}
+```
+
+```toml
+# bento.toml
+[cache]
+remote = "bento://cache.bento.build"
+remote_token_env = "BENTO_CACHE_TOKEN"
+```
+
+`bento login` (or the dashboard) issues the JWT; put it in a repo secret.
+The token is exported to the run step only, under whatever name
+`remote_token_env` declares. Leaving `cache-token` unset is fine if the
+workflow exports the env var itself — an empty input never clobbers it —
+but a `bento://` remote with no token anywhere logs a `::warning::` on
+the job rather than failing silently.
+
+### Job summary
+
+Every run appends a summary to the job's summary page (set
+`job-summary: 'false'` to opt out): a headline —
+`12 tasks · 9 cached · 2 built · 1 failed · 41.2s` — followed by a table
+of dish, task, outcome, cache key, and duration, capped at 50 rows, with
+the captured stderr of anything that failed inlined underneath. It reads
+the same `--report-file` JSON the `report` output carries, so it costs
+one `jq` pass and nothing else.
 
 ### Toolchain handling
 
@@ -509,6 +550,10 @@ resolved), the `bento` version. Three tiers:
   remote = "bento://cache.bento.build"
   remote_token_env = "BENTO_CACHE_TOKEN"
   ```
+
+  In GitHub Actions, pass the JWT as the action's `cache-token` input
+  (see [Remote cache in CI](#remote-cache-in-ci)) — the action doesn't
+  reach the hosted cache without it.
 
   Resolution order for reads: `$BENTO_CACHE_TOKEN` → OS keychain
   (`bento` / `cache-token`, written by `bento login`) →

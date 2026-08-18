@@ -124,6 +124,29 @@ inputs:
     required: false
     default: 'false'
 
+  cache-token:
+    description: >
+      JWT for the hosted remote cache (`[cache] remote =
+      "bento://…"` in bento.toml). Get it from `bento login` or the
+      dashboard, store it as a repo secret, and pass that secret
+      here. Without it a workspace configured for the hosted cache
+      silently falls back to the local + actions/cache tiers — hits
+      on laptops, none in CI. Leave empty if the workflow already
+      exports the token env var itself; an empty input never
+      clobbers it.
+    required: false
+    default: ''
+
+  job-summary:
+    description: >
+      When 'true' (default), append a run summary to the job's
+      $GITHUB_STEP_SUMMARY — headline counts plus a per-task table
+      (dish, task, outcome, cache key, duration) and the stderr
+      excerpt of anything that failed. Needs `jq` on the runner
+      (standard on GitHub-hosted images); skipped silently if absent.
+    required: false
+    default: 'true'
+
   cache-key-suffix:
     description: >
       Extra key component appended to the bento cache key. Bump it to force
@@ -175,6 +198,18 @@ outputs:
       Pipe to `jq` from a downstream step (Docker build, upload-artifact,
       release upload, etc.). Empty `{}` if nothing matched.
     value: ${{ steps.execute.outputs.artifacts }}
+
+  cache-hits:
+    description: Tasks restored from cache (`summary.hits`). Empty if `jq` isn't on the runner.
+    value: ${{ steps.execute.outputs.cache-hits }}
+
+  cache-misses:
+    description: Tasks that actually ran (`summary.built`). Empty if `jq` isn't on the runner.
+    value: ${{ steps.execute.outputs.cache-misses }}
+
+  failed:
+    description: Tasks that failed (`summary.failed`). Empty if `jq` isn't on the runner.
+    value: ${{ steps.execute.outputs.failed }}
 
   toolchains-installed:
     description: >
@@ -352,5 +387,11 @@ runs:
         BENTO_PREVIEW: ${{ inputs.preview }}
         BENTO_ROLLBACK: ${{ inputs.rollback }}
         BENTO_NO_NOTIFY: ${{ inputs.no-notify }}
+        BENTO_JOB_SUMMARY: ${{ inputs.job-summary }}
+        # Deliberately not named BENTO_CACHE_TOKEN: a step-level env
+        # entry shadows the caller's own export even when empty, so
+        # binding the input directly would unset a token the workflow
+        # provided itself. run.sh promotes it only when non-empty.
+        BENTO_CACHE_TOKEN_INPUT: ${{ inputs.cache-token }}
         REPORT_FILE: ${{ runner.temp }}/bento-report.json
       run: bash "${{ github.action_path }}/scripts/action/run.sh" execute
