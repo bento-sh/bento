@@ -1,0 +1,22 @@
+version: 2
+
+# Actions are SHA-pinned (see the `# vX.Y.Z` comments next to each
+# `uses:`), which makes them invisible to a human reading tags —
+# dependabot is what keeps those pins from silently rotting.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ['*']
+        update-types: [minor, patch]
