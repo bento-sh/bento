@@ -2,6 +2,13 @@ name: Bento CI
 description: Run a bento (plan + execute with content-hash caching) in GitHub Actions.
 author: Disruptor Labs
 
+# Runner support: ubuntu-* and macos-* only. Windows runners are NOT
+# supported — every step is `shell: bash`, the helper script is a POSIX
+# shell script, and no Windows binary is published (v0.2). On Windows,
+# `cargo install bento-cli` and invoke bento directly instead of using
+# this action. Alpine-based container jobs are fine: the installer
+# picks the static musl tarball when it sees a musl libc.
+
 branding:
   icon: box
   color: orange
@@ -136,8 +143,8 @@ inputs:
       `uv python install`), and uv (declared co-required by the python
       tool, so a `[toolchain] python = "..."` pin lays uv down first
       automatically). For tools without a built-in installer —
-      currently `bun` and `deno` — the action bootstraps from each
-      ecosystem's official install script (`bun.sh/install`) before
+      currently `bun` and `deno` — the action bootstraps from the
+      pinned upstream GitHub release asset, checksum-verified, before
       invoking bento, when those tools are pinned in `bento.toml`'s
       `[toolchain]` block.
 
@@ -179,9 +186,8 @@ outputs:
       uv when python is pinned) appear in `installed` with
       `co_required_for` instead of `used_by`. The `skipped` array
       lists pinned tools that bento doesn't install natively (today:
-      `bun`, `deno`); the composite action falls back to each
-      ecosystem's official install script for those before this step
-      runs.
+      `bun`, `deno`); the composite action falls back to the pinned
+      upstream release asset for those before this step runs.
     value: ${{ steps.install-toolchains.outputs.json }}
 
 runs:

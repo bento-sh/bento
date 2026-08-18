@@ -36,6 +36,38 @@ add_secret_from_flags() {
     done <<< "${BENTO_SECRET_FROM:-}"
 }
 
+# "musl" or "gnu" for the running Linux userland. Container jobs on
+# Alpine images can't exec a glibc binary (no ld-linux loader) and
+# report "musl libc" from `ldd --version`; a box with no ldd at all is
+# not glibc either.
+linux_libc() {
+    if ! command -v ldd >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; then
+        echo musl
+    else
+        echo gnu
+    fi
+}
+
+# SHA-256 of a file. macOS runners ship `shasum` but not `sha256sum`.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+# Compare a file against an expected hex digest; abort on mismatch.
+verify_sha256() {
+    local file="$1" expected="$2" actual
+    actual="$(sha256_of "$file")"
+    if [ "$expected" != "$actual" ]; then
+        echo "::error::checksum mismatch for $(basename "$file") (expected $expected, got $actual)" >&2
+        exit 1
+    fi
+    echo "==> checksum verified: $(basename "$file")"
+}
+
 # Write a KEY/VALUE pair to $GITHUB_OUTPUT using the heredoc form —
 # safe for multi-line values (JSON reports) that would otherwise
 # truncate on the first newline.
@@ -117,16 +149,7 @@ phase_install_bento() {
         *)             echo "::error::unsupported arch $(uname -m)" >&2; exit 1 ;;
     esac
     case "$(uname -s)" in
-        # Container-based jobs on Alpine images can't exec the glibc
-        # build (no ld-linux loader). `ldd --version` reports "musl
-        # libc" there; no ldd at all is not glibc either.
-        Linux)
-            if ! command -v ldd >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; then
-                triple="${arch}-unknown-linux-musl"
-            else
-                triple="${arch}-unknown-linux-gnu"
-            fi
-            ;;
+        Linux)  triple="${arch}-unknown-linux-$(linux_libc)" ;;
         Darwin) triple="${arch}-apple-darwin" ;;
         *)      echo "::error::unsupported OS $(uname -s)" >&2; exit 1 ;;
     esac
@@ -142,16 +165,13 @@ phase_install_bento() {
         --pattern "${asset}.tar.gz.sha256" \
         --dir "$tmp"
 
-    if [ -f "$tmp/${asset}.tar.gz.sha256" ]; then
-        local expected actual
-        expected="$(awk '{print $1}' "$tmp/${asset}.tar.gz.sha256")"
-        actual="$(sha256sum "$tmp/${asset}.tar.gz" | awk '{print $1}')"
-        if [ "$expected" != "$actual" ]; then
-            echo "::error::checksum mismatch (expected $expected, got $actual)" >&2
-            exit 1
-        fi
-        echo "==> checksum verified"
+    # No checksum asset means either a tampered release or a broken
+    # publish — neither is a reason to run the binary anyway.
+    if [ ! -f "$tmp/${asset}.tar.gz.sha256" ]; then
+        echo "::error::release $tag has no ${asset}.tar.gz.sha256 asset — refusing to install an unverified binary" >&2
+        exit 1
     fi
+    verify_sha256 "$tmp/${asset}.tar.gz" "$(awk '{print $1}' "$tmp/${asset}.tar.gz.sha256")"
 
     tar -xzf "$tmp/${asset}.tar.gz" -C "$tmp"
     mv "$tmp/${asset}/bento" "$BENTO_INSTALL_DIR/bento"
@@ -165,8 +185,8 @@ phase_install_toolchains() {
     # (delegated to `uv python install`), and uv itself (declared
     # co-required by the python tool, so a `[toolchain] python = "..."`
     # pin lays uv down first automatically). Bun and Deno don't have
-    # built-in installers yet — we bootstrap those from their upstream
-    # install scripts when the workspace pins them.
+    # built-in installers yet — we bootstrap those from their pinned
+    # upstream release assets when the workspace pins them.
     bootstrap_external_toolchains
 
     # Capture stdout + exit code so we can publish the JSON output
@@ -210,7 +230,7 @@ read_toolchain_pin() {
 
 bootstrap_external_toolchains() {
     # Bento's built-in installer covers go, node, python, and uv. Bun
-    # and Deno fall through to upstream install scripts for now —
+    # and Deno fall through to upstream release assets for now —
     # tracked separately for proper BunTool / DenoTool support in
     # bento-toolchain (needs zip-archive support).
     local bun_version
@@ -223,16 +243,53 @@ bootstrap_external_toolchains() {
     fi
 }
 
+# Install bun from its pinned GitHub release asset, checksum-verified
+# against the release's SHASUMS256.txt. Deliberately NOT `curl
+# bun.sh/install | bash`: that fetches an unpinned script over the
+# network and runs it, so whoever controls bun.sh controls this runner.
 install_bun() {
     local version="$1"
     local install_dir="${HOME}/.bun"
+    local tag="bun-v${version}"
+    local base="https://github.com/oven-sh/bun/releases/download/${tag}"
 
-    echo "==> bootstrapping bun (pinned: $version)"
-    # bun.sh/install respects BUN_INSTALL for the install root and accepts
-    # `bun-v<version>` as the second argument to pin.
-    BUN_INSTALL="$install_dir" \
-        sh -c 'curl -fsSL https://bun.sh/install | bash -s "bun-v'"$version"'"' \
-        >/dev/null
+    # bun publishes separate musl builds; same Alpine constraint as bento.
+    local os arch libc=""
+    case "$(uname -s)" in
+        Linux)
+            os=linux
+            if [ "$(linux_libc)" = musl ]; then
+                libc="-musl"
+            fi
+            ;;
+        Darwin) os=darwin ;;
+        *)      echo "::error::unsupported OS for bun bootstrap: $(uname -s)" >&2; exit 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|amd64)  arch=x64 ;;
+        aarch64|arm64) arch=aarch64 ;;
+        *)             echo "::error::unsupported arch for bun bootstrap: $(uname -m)" >&2; exit 1 ;;
+    esac
+    local asset="bun-${os}-${arch}${libc}"
+
+    echo "==> bootstrapping bun (pinned: $version) from oven-sh/bun@${tag}"
+    local tmp
+    tmp="$(mktemp -d)"
+    curl -fsSL -o "$tmp/${asset}.zip" "${base}/${asset}.zip"
+    curl -fsSL -o "$tmp/SHASUMS256.txt" "${base}/SHASUMS256.txt"
+
+    local expected
+    expected="$(awk -v want="${asset}.zip" '$2 == want || $2 == "*" want {print $1}' "$tmp/SHASUMS256.txt")"
+    if [ -z "$expected" ]; then
+        echo "::error::${asset}.zip missing from ${tag} SHASUMS256.txt" >&2
+        exit 1
+    fi
+    verify_sha256 "$tmp/${asset}.zip" "$expected"
+
+    mkdir -p "$install_dir/bin"
+    unzip -q -o "$tmp/${asset}.zip" -d "$tmp"
+    mv "$tmp/${asset}/bun" "$install_dir/bin/bun"
+    chmod +x "$install_dir/bin/bun"
     echo "$install_dir/bin" >> "$GITHUB_PATH"
     export PATH="$install_dir/bin:$PATH"
     "$install_dir/bin/bun" --version
