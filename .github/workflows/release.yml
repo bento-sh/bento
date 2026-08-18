@@ -15,8 +15,11 @@ on:
         description: 'Tag to release (e.g. v0.1.1)'
         required: true
 
+# Default to read-only; only the `release` job widens it (below) to what
+# publishing actually needs. A compromised build step then can't push a
+# tag or mutate a release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ── Preflight ──────────────────────────────────────────────────────
@@ -36,10 +39,34 @@ jobs:
   # vX.Y.Z`) is itself a main commit, so push it and wait for the
   # main full-matrix run to go green before pushing the tag.
   preflight:
-    name: preflight (fmt + clippy + tests on tagged commit)
-    runs-on: ubuntu-latest
+    name: preflight (fmt + clippy + tests on tagged commit, ${{ matrix.os }})
+    # macOS is a release target but ci.yml only cross-*builds* it — nothing
+    # runs the test suite on Darwin until here. Last gate before artefacts.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # A workflow_dispatch release builds whatever `tag` points at, so the
+      # tag is the only statement of intent — cross-check it against the
+      # version the binaries will actually report.
+      - name: Assert tag matches workspace version
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          tag_version="${TAG#v}"
+          if [ "$tag_version" != "$version" ] && [ "${tag_version%%-*}" != "$version" ]; then
+            echo "::error::tag '$TAG' does not match workspace.package.version '$version'"
+            exit 1
+          fi
+          echo "tag $TAG matches workspace version $version"
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
@@ -48,7 +75,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: release-preflight
+          key: release-preflight-${{ matrix.os }}
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -89,17 +116,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Resolve version from ref
         id: version
         shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ "$tag" =~ ^v(.+)$ ]]; then
+          if [[ "$TAG" =~ ^v(.+)$ ]]; then
             echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::tag '$tag' must look like v<semver>"
+            echo "::error::tag '$TAG' must look like v<semver>"
             exit 1
           fi
 
@@ -112,7 +142,7 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Install cross (linux-aarch64 only)
+      - name: Install cross (linux cross-targets only)
         if: matrix.cross
         run: cargo install cross --locked --version 0.2.5
 
@@ -163,21 +193,31 @@ jobs:
     name: publish release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + move the floating minor tag
+      id-token: write # OIDC token the attestation is signed against
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Resolve version from ref
         id: version
         shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ "$tag" =~ ^v(.+)$ ]]; then
+          if [[ "$TAG" =~ ^v(.+)$ ]]; then
             echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::tag '$tag' must look like v<semver>"
+            echo "::error::tag '$TAG' must look like v<semver>"
             exit 1
           fi
+          # github.sha is the *branch* head on workflow_dispatch; the
+          # floating-tag move below has to target the tagged commit.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -192,6 +232,17 @@ jobs:
           # be parsed as a flag (shellcheck SC2035).
           cat -- *.sha256 > SHA256SUMS
           ls -la
+
+      # Signed, verifiable statement that these exact bytes came out of
+      # this workflow at this commit: `gh attestation verify <tarball>
+      # --repo bento-sh/bento`. Covers SHA256SUMS too, so the checksum
+      # file consumers trust is itself attested.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -209,13 +260,22 @@ jobs:
 
             ### Artifacts
 
-            Four prebuilt binaries + checksums are attached to this release.
+            Prebuilt binaries + checksums for every supported target are
+            attached to this release, each with a signed build-provenance
+            attestation:
+
+            ```sh
+            gh attestation verify bento-${{ steps.version.outputs.version }}-<target>.tar.gz --repo ${{ github.repository }}
+            ```
           files: |
             dist/*.tar.gz
             dist/*.sha256
             dist/SHA256SUMS
           generate_release_notes: true
-          make_latest: true
+          # A hyphen in the tag (v0.1.0-rc1) means prerelease — never
+          # promote one to `latest`, which is what install.sh resolves.
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+          make_latest: ${{ !contains(steps.version.outputs.tag, '-') }}
 
       # Move the floating minor tag (e.g. `v0.1`) to this commit so the
       # Marketplace listing — published once against `v0.1` — always
@@ -230,7 +290,7 @@ jobs:
         shell: bash
         env:
           FULL_TAG: ${{ steps.version.outputs.tag }}
-          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_SHA: ${{ steps.version.outputs.sha }}
         run: |
           if [[ "$FULL_TAG" == *-* ]]; then
             echo "skipping floating-tag move for pre-release $FULL_TAG"
