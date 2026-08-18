@@ -47,6 +47,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 blake3 = "1"
 walkdir = "2"
+# .gitignore-aware directory walk (same author as globset) — keeps
+# editor swap files and untracked local noise out of cache keys.
+ignore = "0.4"
 globset = "0.4"
 tar = "0.4"
 indicatif = "0.17"

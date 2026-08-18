@@ -874,59 +874,26 @@ pub(crate) fn compute_key(input: &KeyInputs<'_>) -> Result<(CacheKey, InputManif
 
     let mut manifest_files = Vec::new();
 
-    if !globs.is_empty() && dish_dir.is_dir() {
+    if !globs.is_empty() {
         let matcher = build_matcher(&globs)?;
         // A task's own outputs are never inputs — otherwise the key
-        // churns after every build. Same for the universal noise dirs.
+        // churns after every build.
         let output_matcher = build_matcher(&task.outputs)?;
-
-        let mut matched: Vec<(PathBuf, bool)> = Vec::new();
-        let walker = walkdir::WalkDir::new(dish_dir)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                e.depth() == 0
-                    || !(e.file_type().is_dir()
-                        && crate::discovery::is_noise_dir(&e.file_name().to_string_lossy()))
-            });
-        for entry in walker {
-            let entry = entry?;
-            let ft = entry.file_type();
-            if !(ft.is_file() || ft.is_symlink()) {
-                continue;
-            }
-            let rel = match entry.path().strip_prefix(dish_dir) {
-                Ok(r) => r.to_path_buf(),
-                Err(_) => continue,
-            };
-            if let Some(ref d) = derived_matcher {
-                if d.is_match(&rel) {
-                    continue;
-                }
-            }
-            if output_matcher.is_match(&rel) {
-                continue;
-            }
-            if matcher.is_match(&rel) {
-                matched.push((rel, ft.is_symlink()));
-            }
+        let mut exclude: Vec<&globset::GlobSet> = vec![&output_matcher];
+        if let Some(d) = derived_matcher.as_ref() {
+            exclude.push(d);
         }
-        matched.sort();
+
+        let matched = crate::walk::walk(&crate::walk::FileWalk {
+            root: dish_dir,
+            include: &matcher,
+            exclude: &exclude,
+            respect_ignores: true,
+        })?;
 
         for (rel, is_symlink) in matched {
             let full = dish_dir.join(&rel);
-            // Symlinks hash by target path, not by pointee content —
-            // cheap, deterministic, and enough to invalidate when the
-            // link is repointed.
-            let content = if is_symlink {
-                std::fs::read_link(&full)
-                    .with_context(|| format!("reading link {}", full.display()))?
-                    .to_string_lossy()
-                    .into_owned()
-                    .into_bytes()
-            } else {
-                std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?
-            };
+            let content = crate::walk::hashable_content(&full, is_symlink)?;
             let file_hash = blake3::hash(&content);
             hasher.add_file(&rel, &content);
             manifest_files.push(ManifestFile {

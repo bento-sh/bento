@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use bento_config::Workspace;
-use walkdir::WalkDir;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactsError {
@@ -93,7 +92,7 @@ fn collect_patterns(dish: &bento_config::DishConfig) -> Vec<String> {
 
 /// Expand each pattern against `dish_dir`. Literal paths (no glob
 /// metachars) are included as-is when they exist on disk; globs are
-/// matched against every file under `dish_dir` via walkdir.
+/// matched against every file under `dish_dir`.
 ///
 /// Result is sorted + deduped via `BTreeSet`.
 fn resolve_patterns(dish_dir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
@@ -118,19 +117,15 @@ fn resolve_patterns(dish_dir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>
         }
         let matcher = builder.build()?;
 
-        for entry in WalkDir::new(dish_dir).follow_links(false) {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            if let Ok(rel) = entry.path().strip_prefix(dish_dir) {
-                if matcher.is_match(rel) {
-                    hits.insert(entry.path().to_path_buf());
-                }
-            }
+        // No ignore filtering: declared artefacts (`dist/`, `target/`)
+        // are gitignored by definition.
+        for (rel, _) in crate::walk::walk(&crate::walk::FileWalk {
+            root: dish_dir,
+            include: &matcher,
+            exclude: &[],
+            respect_ignores: false,
+        })? {
+            hits.insert(dish_dir.join(rel));
         }
     }
 

@@ -20,6 +20,7 @@ pub mod plugins;
 pub mod prime;
 pub mod report;
 pub mod run;
+mod walk;
 pub mod why;
 
 pub use diff::GitDiff;

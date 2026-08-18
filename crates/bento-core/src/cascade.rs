@@ -16,7 +16,7 @@
 //! stable across the skipped cascade.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use bento_adapters::{AdapterRegistry, LanguageAdapter};
@@ -161,7 +161,7 @@ fn content_hash(
         }
     }
 
-    if globs.is_empty() || !dish_dir.is_dir() {
+    if globs.is_empty() {
         return Ok(hasher.finalize().into());
     }
 
@@ -194,30 +194,16 @@ fn content_hash(
         None
     };
 
-    let mut matched: Vec<PathBuf> = Vec::new();
-    for entry in walkdir::WalkDir::new(dish_dir).follow_links(false) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let Ok(rel) = entry.path().strip_prefix(dish_dir) else {
-            continue;
-        };
-        if let Some(ref d) = derived_matcher {
-            if d.is_match(rel) {
-                continue;
-            }
-        }
-        if matcher.is_match(rel) {
-            matched.push(rel.to_path_buf());
-        }
-    }
-    matched.sort();
+    let matched = crate::walk::walk(&crate::walk::FileWalk {
+        root: dish_dir,
+        include: &matcher,
+        exclude: &derived_matcher.iter().collect::<Vec<_>>(),
+        respect_ignores: true,
+    })?;
 
-    for rel in matched {
+    for (rel, is_symlink) in matched {
         let full = dish_dir.join(&rel);
-        let content =
-            std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
+        let content = crate::walk::hashable_content(&full, is_symlink)?;
         // Length-prefix path + content to keep the rolling hash injective.
         let rel_str = rel.to_string_lossy();
         hasher.update(&(rel_str.len() as u64).to_le_bytes());
