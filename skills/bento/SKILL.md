@@ -47,12 +47,7 @@ Easiest path: `bento mcp install`. With no arguments it auto-detects every insta
 | List every dish (name, path, language, bentos) + flag orphans | `bento dish list` |
 | List every bento (name, source, dishes) | `bento box list` |
 | Scaffold bento.toml + bentos/ in this repo (auto-detects dishes) | `bento init` |
-| Convert a Turborepo workspace into bento config | `bento migrate turbo [--dry-run] [--force]` |
-| Convert an Nx workspace into bento config | `bento migrate nx [--dry-run] [--force]` |
-| Convert a Lerna workspace into bento config | `bento migrate lerna [--dry-run] [--force]` |
-| Convert a Makefile into bento config (best-effort) | `bento migrate make [--dry-run] [--force]` |
-| Convert a moonrepo workspace into bento config | `bento migrate moon [--dry-run] [--force]` |
-| Convert a Rush.js workspace into bento config | `bento migrate rush [--dry-run] [--force]` |
+| Convert another monorepo tool's config into bento config | `bento migrate <turbo\|nx\|lerna\|moon\|rush\|make> [--path DIR] [--dry-run] [--force]` |
 | Install every dish's deps (replaces `npm ci` / `go mod download` / `composer install` / …) | `bento install` |
 | Install one dish | `bento install <dish>` |
 | Full CI pass (build + check + test + lint, no deploy/notify) | `bento ci` |
@@ -82,6 +77,13 @@ Easiest path: `bento mcp install`. With no arguments it auto-detects every insta
 | Sign in to bento.build + stash the cache JWT in OS keychain (or `~/.bento/credentials` 0600 fallback) | `bento login` |
 
 Global flags worth knowing: `--json`, `--no-cache`, `--bento <name>`, `--report-file <path>`, `--skip-install`, `--force-install`, `-v` / `--verbose`.
+
+`bento migrate` emits a *starting point*, not a finished translation: read
+the `notes[]` in its report (`--json`) for everything it couldn't port
+(per-task `dependsOn`, Nx `configurations`, Rush phases, Make pattern
+rules). `--force` regenerates `dish.toml` / `bentos/prod.toml`; an existing
+`bento.toml` is never overwritten, and a skipped `dish.toml` still lands in
+`bentos/prod.toml`. Exit 1 means a conflict needs `--force`.
 
 ## Agent-friendly output
 

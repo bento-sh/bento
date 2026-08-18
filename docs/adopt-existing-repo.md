@@ -59,6 +59,38 @@ The yellow ⚠ on `services/billing` flags that bento couldn't figure out its PH
 
 If init detected nothing (empty repo, only files at the root, languages bento doesn't know about), see the [new-project.md greenfield guide](./new-project.md) and add dishes manually with `bento dish add <path> --lang <lang>`.
 
+### Already on another monorepo tool?
+
+`bento migrate <tool>` reads the config you already have instead of
+re-detecting from scratch — it keeps your task names, outputs, and input
+globs:
+
+```console
+$ bento migrate turbo --dry-run     # turbo | nx | lerna | moon | rush | make
+```
+
+It writes the same three things `bento init` does (`bento.toml`, per-package
+`dish.toml`, `bentos/prod.toml`) and prints a note for everything it
+couldn't port faithfully — per-task `dependsOn` (bento derives ordering from
+the dish graph), Nx `configurations`, Rush phases, Make pattern rules. Read
+those before your first `bento ci`; the output is a starting point you
+review, not a finished translation.
+
+Two rules worth knowing:
+
+- **`bento.toml` is never overwritten**, not even with `--force`. It holds
+  toolchain pins and cache config no migrator can reconstruct. Delete it
+  first if you want a fresh one.
+- `--force` regenerates `dish.toml` and `bentos/prod.toml`. Without it, an
+  existing `dish.toml` is left alone — but the package is still listed in
+  `bentos/prod.toml`, so hand-written dish config survives a re-run without
+  dropping the dish out of the bento.
+
+`bento migrate make` is the odd one out: it emits `run = "make <target>"`
+per target and no `language`, so Make keeps handling variable expansion and
+prerequisite ordering, and `bento install` stays a no-op. Set `language`
+by hand if the repo also carries a native manifest.
+
 ## 2. Review what got generated
 
 ```console
