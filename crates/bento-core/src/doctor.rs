@@ -921,7 +921,7 @@ fn check_cloud(workspace: &Workspace) -> Vec<DoctorCheck> {
     ));
 
     // 2. JWT shape + payload decode.
-    match decode_jwt_claims(&raw_token) {
+    match crate::cloud::decode_jwt_claims(&raw_token) {
         Ok(claims) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -933,7 +933,7 @@ fn check_cloud(workspace: &Workspace) -> Vec<DoctorCheck> {
                     "iss={iss} team_id={team_id} scope={scope} label={label}",
                     iss = claims.iss,
                     team_id = claims.team_id.as_str(),
-                    scope = format!("{:?}", claims.scope).to_lowercase(),
+                    scope = claims.scope,
                     label = claims.label.as_str(),
                 ),
             ));
@@ -988,32 +988,6 @@ fn cache_health_url(bento_url: &str) -> Result<String, String> {
         return Err("URL has no host".to_string());
     }
     Ok(format!("https://{host}/health"))
-}
-
-/// Decode a JWT's payload segment into [`bento_cas_protocol::Claims`].
-/// Does NOT verify the signature — the CLI doesn't hold the worker's
-/// public key. The point is to catch shape / claim errors locally so
-/// users don't waste a round-trip diagnosing "why does every cache
-/// call return 401".
-fn decode_jwt_claims(jwt: &str) -> Result<bento_cas_protocol::Claims, String> {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    let mut parts = jwt.split('.');
-    let _header = parts.next().ok_or("token has no segments".to_string())?;
-    let payload_b64 = parts
-        .next()
-        .ok_or("token missing payload segment".to_string())?;
-    let _sig = parts
-        .next()
-        .ok_or("token missing signature segment".to_string())?;
-    if parts.next().is_some() {
-        return Err("token has more than 3 segments".to_string());
-    }
-    let payload = URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .map_err(|e| format!("payload is not valid base64url: {e}"))?;
-    serde_json::from_slice::<bento_cas_protocol::Claims>(&payload)
-        .map_err(|e| format!("payload JSON does not match Claims: {e}"))
 }
 
 /// One-shot HTTP GET with a tight timeout. 200/204 → Ok; non-2xx → Fail
@@ -1290,36 +1264,5 @@ language = "go"
         );
         assert!(cache_health_url("https://example.com").is_err());
         assert!(cache_health_url("bento://").is_err());
-    }
-
-    #[test]
-    fn jwt_decode_rejects_malformed_tokens() {
-        assert!(decode_jwt_claims("").is_err());
-        assert!(decode_jwt_claims("only-one-segment").is_err());
-        assert!(decode_jwt_claims("a.b").is_err());
-        assert!(decode_jwt_claims("a.b.c.d").is_err());
-        // Valid header.payload.sig structure but payload isn't valid
-        // base64url, then payload isn't valid Claims JSON.
-        assert!(decode_jwt_claims("header.!!notb64!!.sig").is_err());
-        assert!(decode_jwt_claims("header.eyJmb28iOiJiYXIifQ.sig").is_err());
-    }
-
-    #[test]
-    fn jwt_decode_extracts_claims() {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        let claims_json = serde_json::json!({
-            "iss": "bento.build",
-            "team_id": "00000000-0000-0000-0000-000000000001",
-            "scope": "read_write",
-            "label": "ci-prod",
-            "iat": 1_700_000_000_u64,
-            "exp": 1_700_000_000_u64 + 30 * 86_400,
-        });
-        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims_json).unwrap());
-        let jwt = format!("HEADER.{payload}.SIG");
-        let claims = decode_jwt_claims(&jwt).expect("valid claims should decode");
-        assert_eq!(claims.iss, "bento.build");
-        assert_eq!(claims.label.as_str(), "ci-prod");
     }
 }

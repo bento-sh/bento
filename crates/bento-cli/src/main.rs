@@ -1,5 +1,6 @@
 mod artifacts;
 mod cli;
+mod cloud;
 mod errors;
 mod init;
 mod json;
@@ -34,7 +35,7 @@ use bento_core::{
     IntegrationTaskKind, LocalCache, PlanOptions, TargetRef, Workspace,
 };
 
-use cli::{BoxAction, CacheAction, Cli, Command, DishAction, GlobalFlags, McpAction};
+use cli::{BoxAction, CacheAction, Cli, CloudAction, Command, DishAction, GlobalFlags, McpAction};
 
 fn main() {
     let cli = Cli::parse();
@@ -83,7 +84,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Dish(DishAction::List) => return run_dish_list(&cli.global),
         Command::Box(BoxAction::Add { name }) => return run_box_add(&cli.global, name),
         Command::Box(BoxAction::List) => return run_box_list(&cli.global),
-        Command::Prime => return prime::run(&cli.global),
+        Command::Prime { no_cloud } => return prime::run(&cli.global, no_cloud),
         Command::Plan { target, since } => run_plan(&cli.global, target, since)?,
         Command::Ci => return run_ci(&cli.global),
         Command::Install { target, force } => return run_install(&cli.global, target, force),
@@ -144,7 +145,13 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         }) => return mcp::run(cli.global.json, client, local, pin_workspace, name),
         Command::Toolchain(action) => return toolchain::run(&cli.global, action),
         Command::Release { spec } => return release::run(&spec),
-        Command::Login => return login::run(),
+        Command::Login {
+            agent,
+            push,
+            scope,
+            ttl,
+        } => return login::run(agent, push, scope, ttl),
+        Command::Cloud(CloudAction::Health) => return cloud::run(&cli.global),
         Command::SlackPost {
             webhook_env,
             channel,

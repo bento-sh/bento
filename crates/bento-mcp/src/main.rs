@@ -91,7 +91,7 @@ impl BentoServer {
             async {
                 let root = self.require_workspace_root().await?;
                 let workspace = Workspace::load(&root)?;
-                let out = bento_core::prime::compute(&workspace)?;
+                let out = bento_core::prime::compute(&workspace, true)?;
                 anyhow::Ok(serde_json::to_value(&out)?)
             }
             .await,

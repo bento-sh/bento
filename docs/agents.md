@@ -91,6 +91,57 @@ A good mental rule: "if the agent is about to do something that could've been pa
 
 ---
 
+## Hosted cache: agent-scoped login + the `cloud` section
+
+If the repo points `[cache] remote` at `bento://cache.bento.build`, an agent
+gets the team's shared cache — and, once signed in, the team's build health.
+
+Sign in with a credential shaped for an agent rather than for a human:
+
+```sh
+bento login --agent     # = --scope read --ttl 60m
+```
+
+`--agent` asks for a **read-only** token that expires in an hour: the agent
+reads everything the team has already built, never writes to the shared
+cache, and its credential dies with the session. `--scope read|read_write`
+and `--ttl 45m|2h|7d` set the two independently (`--push` is `--scope
+read_write`); plain `bento login` still mints read+write for a year. The
+approval page in the browser shows exactly what it is about to grant. The
+token lands in the OS keychain (or `~/.bento/credentials`, mode 0600) and
+every later verb picks it up — nothing to export.
+
+With a token present, `bento prime` grows a `cloud` section:
+
+```jsonc
+{
+  "cloud": {
+    "team": "acme", "tier": "starter",
+    "cache": { "hit_rate_7d": 0.82, "bytes_used": 12884901888,
+               "bytes_limit": 107374182400, "pct_used": 0.12 },
+    "builds_7d": { "total": 214, "failed": 9 },
+    "flaky_packages": [{ "package": "api", "fail_rate_7d": 0.18,
+                         "runs_7d": 61, "first_seen": "2026-08-11T09:12:04Z" }],
+    "cold_packages": [{ "package": "web", "miss_rate_7d": 0.71, "runs_7d": 44 }],
+    "recommended_next": ["`api` failed 18% of 61 runs in 7d — flaky; …"],
+    "generated_at": "2026-08-18T10:31:00Z"
+  }
+}
+```
+
+Its `recommended_next` entries are appended after prime's local ones, so an
+agent that already follows step 1 needs no new logic. The fetch is
+best-effort with a 2 second budget: no remote, no token, offline, or a slow
+control plane all mean `"cloud": null` and an otherwise identical snapshot.
+`bento prime --no-cloud` skips it outright and keeps prime fully offline.
+
+`bento cloud health` prints the same document on its own — use it to
+re-check mid-session without re-scanning the workspace. Flakiness and cache
+coldness are per *package* (one `bento ci` invocation is one row server-side),
+not per task.
+
+---
+
 ## MCP server — `bento-mcp` (preferred for agents)
 
 bento ships a second binary, `bento-mcp`, that exposes every bento verb as a typed [Model Context Protocol](https://modelcontextprotocol.io) tool. Clients that speak MCP — Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, OpenCode, and Zed — auto-discover the tools and invoke them directly: no shell-out, no stdout parsing, no per-repo `CLAUDE.md` snippet. The tool outputs match `bento <verb> --json` byte-for-byte.

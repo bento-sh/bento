@@ -129,9 +129,15 @@ pub enum Command {
     /// command an agent (or human) runs in a fresh session.
     ///
     /// Unlike `bento doctor`, prime is advisory — nothing fails, every
-    /// field is informational. Runs without executing tasks and without
-    /// network (use `bento doctor --cloud` for reachability checks).
-    Prime,
+    /// field is informational. Runs without executing tasks. Its only
+    /// network call is the `cloud` section — hosted-cache health for
+    /// your team, fetched with a 2s budget when a `bento://` remote and
+    /// a token are both present, dropped silently on any failure.
+    Prime {
+        /// Skip the hosted-cache health fetch; keep prime fully offline.
+        #[arg(long)]
+        no_cloud: bool,
+    },
 
     /// Show what would build, and why
     Plan {
@@ -358,6 +364,11 @@ pub enum Command {
     #[command(subcommand)]
     Cache(CacheAction),
 
+    // ── Hosted cache ───────────────────────────────────────────────
+    /// Hosted bento.build cache (needs `bento login`)
+    #[command(subcommand)]
+    Cloud(CloudAction),
+
     // ── Secrets ────────────────────────────────────────────────────
     /// Manage deploy-target secrets (Railway, Cloudflare)
     ///
@@ -457,7 +468,29 @@ pub enum Command {
     /// keychain (or `~/.bento/credentials` as a 0600 fallback).
     /// After this, `bento build|ci|…` pick up the token automatically
     /// and you can stop setting `BENTO_CACHE_TOKEN` by hand.
-    Login,
+    ///
+    /// Defaults to a read_write token valid for a year. `--agent`
+    /// narrows that to read-only for an hour; the approval page shows
+    /// whichever you asked for before anyone clicks Approve.
+    Login {
+        /// Shorthand for `--scope read --ttl 60m` — a coding agent
+        /// should read the shared cache without writing to it, and its
+        /// credential should not outlive the session.
+        #[arg(long)]
+        agent: bool,
+
+        /// Ask for a read_write token explicitly (the default).
+        #[arg(long, conflicts_with = "scope")]
+        push: bool,
+
+        /// Token scope. `admin` is dashboard-only.
+        #[arg(long, value_name = "SCOPE", value_parser = ["read", "read_write"])]
+        scope: Option<String>,
+
+        /// Token lifetime: `45m`, `2h`, `7d`. Capped at 365d.
+        #[arg(long, value_name = "DURATION", value_parser = crate::login::parse_ttl_minutes)]
+        ttl: Option<u32>,
+    },
 
     // ── Internal (agent / integration use only) ────────────────────
     /// Internal: Slack webhook poster. Invoked by `SlackIntegration`'s
@@ -693,6 +726,16 @@ pub enum ToolchainAction {
 pub enum GraphFormat {
     Ascii,
     Dot,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudAction {
+    /// Cache + build health for the team your token belongs to (JSON)
+    ///
+    /// Same data `bento prime` folds into its `cloud` section, on its
+    /// own and always as JSON: hit rate, quota headroom, build totals,
+    /// flaky + cold packages, and what to do next.
+    Health,
 }
 
 /// Output types for which `bento schema` can emit JSON Schema.

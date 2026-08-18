@@ -173,6 +173,8 @@ A minimal workspace needs just one `bentos/<name>.toml` and one `dish.toml`. Def
 | `bento doctor` | Health check: config, toolchains, cache, git, remotes |
 | `bento artifacts` | List resolved output paths per dish (post-build) |
 | `bento cache stats \| clear \| prune \| push \| pull` | Inspect, clear, bound, or sync cache tiers |
+| `bento login [--agent]` | Sign in to the hosted cache; `--agent` asks for a read-only token that expires in an hour |
+| `bento cloud health` | Hosted-cache + build health for your team: hit rate, quota, flaky and cold packages (JSON) |
 | `bento toolchain list \| install \| pin <tool>=<ver>` | Manage pinned language toolchains; `pin` writes `[toolchain]` in `bento.toml` (comments + formatting preserved) |
 | `bento schema [target]` | Emit JSON Schema for any agent-consumable output type |
 

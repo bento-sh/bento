@@ -6,6 +6,7 @@
 
 pub mod artifacts;
 pub mod cascade;
+pub mod cloud;
 pub mod deploy_state;
 pub mod diagnostic_parsers;
 pub mod diff;

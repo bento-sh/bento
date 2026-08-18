@@ -12,10 +12,10 @@ use bento_core::{MissReason, TaskStatus};
 use crate::cli::GlobalFlags;
 use crate::style;
 
-pub fn run(global: &GlobalFlags) -> Result<i32> {
+pub fn run(global: &GlobalFlags, no_cloud: bool) -> Result<i32> {
     let root = crate::resolve_workspace_root(global)?;
     let workspace = Workspace::load(&root)?;
-    let out = prime::compute(&workspace)?;
+    let out = prime::compute(&workspace, !no_cloud)?;
 
     if global.json {
         crate::json::emit(&out)?;
@@ -119,6 +119,31 @@ pub fn print_human(out: &Output) {
                 "  {marker} [{tag}] {dish}:{task}{reason}",
                 dish = t.dish,
                 task = t.task,
+            );
+        }
+    }
+
+    if let Some(c) = &out.cloud {
+        println!();
+        println!(
+            "{} {} · {} tier · {:.0}% hit rate (7d) · {:.0}% of quota used",
+            style::bold("cloud"),
+            style::cyan(&c.team),
+            c.tier,
+            c.cache.hit_rate_7d * 100.0,
+            c.cache.pct_used * 100.0,
+        );
+        println!(
+            "  {} builds (7d), {} failed",
+            c.builds_7d.total, c.builds_7d.failed
+        );
+        for f in &c.flaky_packages {
+            println!(
+                "  {} {} flaky — {:.0}% of {} runs failed",
+                style::yellow("!"),
+                f.package,
+                f.fail_rate_7d * 100.0,
+                f.runs_7d
             );
         }
     }

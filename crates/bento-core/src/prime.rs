@@ -7,8 +7,13 @@
 //! `bento_prime` tool).
 //!
 //! Advisory only — every field is informational. Pure read; does not
-//! execute tasks and does not make network calls. For reachability /
-//! credential checks, use `bento doctor --cloud`.
+//! execute tasks. The one network call is the optional `cloud` section:
+//! when a `bento://` remote is configured and a token resolves, prime
+//! fetches team health from the control plane with a 2s budget and
+//! drops the section on any failure. `bento prime --no-cloud` skips it.
+//! For reachability / credential checks, use `bento doctor --cloud`.
+
+use std::time::Duration;
 
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -16,7 +21,13 @@ use serde::Serialize;
 
 use bento_config::Workspace;
 
+use crate::cloud::CloudHealth;
 use crate::{plan_at, scan_orphan_dishes, MissReason, PlanOptions, TaskStatus};
+
+/// Whole-request budget for the cloud health fetch. Prime is the first
+/// thing an agent runs in a session; a slow control plane must cost it
+/// two seconds, not a hung command.
+const CLOUD_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Output {
@@ -30,8 +41,14 @@ pub struct Output {
     pub orphan_dishes: Vec<String>,
     pub cache: CacheStatus,
     pub plan: PlanSnapshot,
+    /// Hosted-cache health for the team the cache token belongs to.
+    /// `None` when no `bento://` remote is configured, no token
+    /// resolves, `--no-cloud` was passed, or the fetch failed — the
+    /// section is advisory, never load-bearing.
+    pub cloud: Option<CloudHealth>,
     /// Ordered next-step suggestions. Agents should follow the first
-    /// and fall back to later ones. Always at least one entry.
+    /// and fall back to later ones. Always at least one entry. Cloud
+    /// advice, when present, is appended after the local steps.
     pub recommended_next: Vec<String>,
 }
 
@@ -98,8 +115,9 @@ pub struct PlanTask {
 /// Produce the prime [`Output`] for a loaded workspace.
 ///
 /// Runs `plan_at` internally to compute the preview — read-only, no
-/// task execution.
-pub fn compute(workspace: &Workspace) -> Result<Output> {
+/// task execution. `cloud` enables the best-effort hosted-cache fetch
+/// (`bento prime --no-cloud` passes `false`).
+pub fn compute(workspace: &Workspace, cloud: bool) -> Result<Output> {
     let bentos = collect_bentos(workspace);
     let dishes = collect_dishes(workspace);
     let orphan_dishes: Vec<String> = scan_orphan_dishes(workspace)
@@ -108,7 +126,16 @@ pub fn compute(workspace: &Workspace) -> Result<Output> {
         .collect();
     let cache = collect_cache(workspace);
     let plan = collect_plan(&workspace.root)?;
-    let recommended_next = recommend_next(workspace, &orphan_dishes, &cache, &plan);
+    let mut recommended_next = recommend_next(workspace, &orphan_dishes, &cache, &plan);
+
+    let cloud = if cloud {
+        fetch_cloud(workspace, &cache)
+    } else {
+        None
+    };
+    if let Some(health) = &cloud {
+        recommended_next.extend(health.recommended_next.iter().cloned());
+    }
 
     Ok(Output {
         workspace_root: workspace.root.display().to_string(),
@@ -117,8 +144,27 @@ pub fn compute(workspace: &Workspace) -> Result<Output> {
         orphan_dishes,
         cache,
         plan,
+        cloud,
         recommended_next,
     })
+}
+
+/// Hosted-cache health, or `None` for any reason at all. Prime is
+/// advisory: an expired token or an unreachable control plane means
+/// one missing section, never a failed command.
+fn fetch_cloud(ws: &Workspace, cache: &CacheStatus) -> Option<CloudHealth> {
+    if !cache.remote_url.as_deref()?.starts_with("bento://") {
+        return None;
+    }
+    let env_name = bento_cache::token::token_env_name(ws.repo.cache.remote_token_env.as_deref());
+    let token = bento_cache::token::resolve_cache_token(env_name)?;
+    match crate::cloud::fetch_health(&token, CLOUD_TIMEOUT) {
+        Ok(health) => Some(health),
+        Err(e) => {
+            tracing::debug!("cloud health unavailable: {e:#}");
+            None
+        }
+    }
 }
 
 fn collect_bentos(ws: &Workspace) -> Vec<BentoRef> {
