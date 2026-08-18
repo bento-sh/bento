@@ -186,6 +186,16 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
 /// Callers that want to write *into* a bento-free directory (like
 /// `bento init`) should use `current_dir` directly — this helper
 /// requires the target already be inside a workspace.
+/// `dish_not_found` with the workspace's dish names attached — every
+/// caller had its own `(known: …)` string before.
+fn dish_not_found(workspace: &Workspace, name: String) -> anyhow::Error {
+    errors::CliError::DishNotFound {
+        name,
+        available: workspace.dishes_by_name.keys().cloned().collect(),
+    }
+    .into()
+}
+
 pub(crate) fn resolve_workspace_root(global: &GlobalFlags) -> anyhow::Result<std::path::PathBuf> {
     let start = match &global.workspace {
         Some(p) => p.clone(),
@@ -600,12 +610,11 @@ fn resolve_secret_aliases(
     let mut aliases = std::collections::BTreeMap::new();
     if let Some(name) = env {
         let Some(environment) = workspace.repo.environments.get(name) else {
-            let known: Vec<&String> = workspace.repo.environments.keys().collect();
-            anyhow::bail!(
-                "environment `{name}` is not defined in bento.toml \
-                 (known: {known:?}). Add an `[environments.{name}]` block \
-                 with `secrets.<VAR> = \"<SOURCE_VAR>\"` entries."
-            );
+            return Err(errors::CliError::EnvNotDefined {
+                name: name.to_string(),
+                available: workspace.repo.environments.keys().cloned().collect(),
+            }
+            .into());
         };
         for (declared, source) in &environment.secrets {
             aliases.insert(declared.clone(), source.clone());
@@ -720,10 +729,11 @@ fn run_box_add(global: &GlobalFlags, name: String) -> anyhow::Result<i32> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        anyhow::bail!(
-            "bento name must be non-empty and contain only ASCII letters, digits, '-', or '_' \
-             (got {name:?})"
-        );
+        return Err(errors::CliError::InvalidName {
+            what: "bento",
+            value: name,
+        }
+        .into());
     }
     let root = resolve_workspace_root(global)?;
     let bentos_dir = root.join("bentos");
@@ -731,10 +741,11 @@ fn run_box_add(global: &GlobalFlags, name: String) -> anyhow::Result<i32> {
         .with_context(|| format!("creating {}", bentos_dir.display()))?;
     let target = bentos_dir.join(format!("{name}.toml"));
     if target.exists() {
-        anyhow::bail!(
-            "bento '{name}' already exists at {} — pick a different name or edit the file",
-            target.display()
-        );
+        return Err(errors::CliError::BoxExists {
+            name,
+            path: target.display().to_string(),
+        }
+        .into());
     }
     let body = render_bento_starter(&name);
     std::fs::write(&target, body.as_bytes())
@@ -906,15 +917,11 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
     let workspace = bento_config::Workspace::load(&root)?;
 
     let Some(bento) = workspace.bentos.get(&bento_name) else {
-        anyhow::bail!(
-            "no bento named '{bento_name}' (known: {})",
-            workspace
-                .bentos
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        return Err(errors::CliError::BoxNotFound {
+            name: bento_name,
+            available: workspace.bentos.keys().cloned().collect(),
+        }
+        .into());
     };
 
     let registry = Arc::new(plugins::build_registry(&workspace));
@@ -951,7 +958,7 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
     }
 
     if targets.is_empty() {
-        anyhow::bail!("bento '{bento_name}' has no dishes with a [serve] block — nothing to serve",);
+        return Err(errors::CliError::NoServeDishes { bento: bento_name }.into());
     }
 
     println!(
@@ -1070,22 +1077,11 @@ fn run_dev(global: &GlobalFlags, dish_name: String) -> anyhow::Result<i32> {
     let workspace = bento_config::Workspace::load(&root)?;
 
     let Some(loaded) = workspace.dishes_by_name.get(&dish_name) else {
-        anyhow::bail!(
-            "no dish named '{dish_name}' (known: {})",
-            workspace
-                .dishes_by_name
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        return Err(dish_not_found(&workspace, dish_name));
     };
 
     let Some(serve) = loaded.config.serve.as_ref() else {
-        anyhow::bail!(
-            "dish '{dish_name}' has no [serve] block in dish.toml \
-             (add `[serve]\\nrun = \"...\"`)"
-        );
+        return Err(errors::CliError::ServeNotConfigured { dish: dish_name }.into());
     };
 
     // Watch the dish's declared inputs plus the adapter's fingerprint files.
@@ -1170,31 +1166,16 @@ fn run_task(
     let workspace = bento_config::Workspace::load(&root)?;
 
     let Some(loaded) = workspace.dishes_by_name.get(&dish_name) else {
-        anyhow::bail!(
-            "no dish named '{dish_name}' (known: {})",
-            workspace
-                .dishes_by_name
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        return Err(dish_not_found(&workspace, dish_name));
     };
 
     let Some(task) = loaded.config.tasks.get(&task_name) else {
-        let known = loaded
-            .config
-            .tasks
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        if known.is_empty() {
-            anyhow::bail!("dish '{dish_name}' has no `[tasks.*]` blocks declared in dish.toml");
+        return Err(errors::CliError::TaskNotFound {
+            dish: dish_name,
+            task: task_name,
+            available: loaded.config.tasks.keys().cloned().collect(),
         }
-        anyhow::bail!(
-            "dish '{dish_name}' has no task '{task_name}' (declared: {})",
-            known.join(", "),
-        );
+        .into());
     };
 
     // Adapter-defaulted lifecycle tasks (build/test/lint without an
@@ -1202,11 +1183,11 @@ fn run_task(
     // run` — those are the cached path. Surface a hint pointing at
     // the right verb instead of silently swallowing it.
     let Some(run) = task.run.as_deref() else {
-        anyhow::bail!(
-            "task '{task_name}' in dish '{dish_name}' inherits its `run` from \
-             the adapter default — use `bento {task_name}` (or add an explicit \
-             `run = \"...\"` to `[tasks.{task_name}]` to opt into ad-hoc invocation)"
-        );
+        return Err(errors::CliError::TaskNotAdHoc {
+            dish: dish_name,
+            task: task_name,
+        }
+        .into());
     };
 
     use anyhow::Context;
@@ -1254,32 +1235,19 @@ fn run_add(
             let dishes: Vec<&String> = workspace.dishes_by_name.keys().collect();
             match dishes.as_slice() {
                 [single] => (*single).clone(),
-                [] => anyhow::bail!(
-                    "this workspace has no dishes — run `bento dish add <path>` first"
-                ),
-                _ => anyhow::bail!(
-                    "workspace has {} dishes — pass `--dish <name>` (known: {})",
-                    dishes.len(),
-                    dishes
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ),
+                [] => return Err(errors::CliError::NoDishes.into()),
+                _ => {
+                    return Err(errors::CliError::DishAmbiguous {
+                        available: dishes.into_iter().cloned().collect(),
+                    }
+                    .into())
+                }
             }
         }
     };
 
     let Some(loaded) = workspace.dishes_by_name.get(&dish_name) else {
-        anyhow::bail!(
-            "no dish named '{dish_name}' (known: {})",
-            workspace
-                .dishes_by_name
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        return Err(dish_not_found(&workspace, dish_name));
     };
 
     // Resolve adapter the same way `bento dev` does: prefer an
@@ -1528,10 +1496,7 @@ fn load_remote_and_local(
     let workspace = bento_config::Workspace::load(&root)?;
     let cache_cfg = &workspace.repo.cache;
     let Some(url) = cache_cfg.remote.as_deref() else {
-        anyhow::bail!(
-            "no remote cache configured — set [cache] remote = \
-             \"s3://<bucket>/<prefix>\" or \"bento://<host>\" in bento.toml first"
-        );
+        return Err(errors::CliError::NoRemoteCache.into());
     };
     let region = cache_cfg.remote_region.as_deref();
     let endpoint = cache_cfg.remote_endpoint.as_deref();
@@ -1764,14 +1729,14 @@ fn run_init(global: &GlobalFlags, no_detect: bool) -> anyhow::Result<i32> {
     let prod_toml = bentos_dir.join("prod.toml");
 
     if bento_toml.exists() || prod_toml.exists() {
-        return Err(anyhow::anyhow!(
-            "workspace already initialised (found {}). Refusing to overwrite.",
-            if bento_toml.exists() {
+        return Err(errors::CliError::AlreadyInitialised {
+            path: if bento_toml.exists() {
                 bento_toml.display().to_string()
             } else {
                 prod_toml.display().to_string()
-            }
-        ));
+            },
+        }
+        .into());
     }
 
     // Detection happens with built-in adapters only — no plugins, since
@@ -1979,15 +1944,11 @@ fn run_graph(
     if let Some(f) = &filter {
         names.retain(|n| *n == f);
         if names.is_empty() {
-            anyhow::bail!(
-                "no bento named '{f}' (known: {})",
-                workspace
-                    .bentos
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
+            return Err(errors::CliError::BoxNotFound {
+                name: f.clone(),
+                available: workspace.bentos.keys().cloned().collect(),
+            }
+            .into());
         }
     }
 

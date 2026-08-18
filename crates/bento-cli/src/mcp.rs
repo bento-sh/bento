@@ -111,11 +111,11 @@ pub fn config_path(client: McpClient, local: bool, cwd: &Path) -> Result<Option<
         }),
         McpClient::Windsurf => {
             if local {
-                anyhow::bail!(
-                    "Windsurf doesn't support project-local MCP config — \
-                     drop `--local` to write the user-global config at \
-                     `~/.codeium/windsurf/mcp_config.json`."
-                );
+                return Err(crate::errors::CliError::McpScopeUnsupported {
+                    client: "Windsurf",
+                    path: "~/.codeium/windsurf/mcp_config.json".into(),
+                }
+                .into());
             }
             Some(
                 home()?
@@ -151,10 +151,11 @@ pub fn config_path(client: McpClient, local: bool, cwd: &Path) -> Result<Option<
         }),
         McpClient::ClaudeDesktop => {
             if local {
-                anyhow::bail!(
-                    "Claude Desktop doesn't support project-local MCP config — \
-                     drop `--local` to write the user-global config."
-                );
+                return Err(crate::errors::CliError::McpScopeUnsupported {
+                    client: "Claude Desktop",
+                    path: "the user-global claude_desktop_config.json".into(),
+                }
+                .into());
             }
             // Per-OS path. Windows omitted: not a supported install
             // target for the bento installer (install.sh is Linux +
@@ -213,10 +214,7 @@ pub fn expand_auto(local: bool, cwd: &Path) -> Result<Vec<McpClient>> {
         }
     }
     if out.is_empty() {
-        anyhow::bail!(
-            "no agent clients detected — pass an explicit client (e.g. \
-             `bento mcp install claude-code`) to register without auto-detection."
-        );
+        return Err(crate::errors::CliError::McpNoClients.into());
     }
     Ok(out)
 }
@@ -718,10 +716,11 @@ pub fn run(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
-        anyhow::bail!(
-            "server name must be non-empty and contain only ASCII letters, digits, '-', or '_' \
-             (got {name:?})"
-        );
+        return Err(crate::errors::CliError::InvalidName {
+            what: "MCP server",
+            value: name,
+        }
+        .into());
     }
 
     let clients = if matches!(client, McpClient::Auto) {

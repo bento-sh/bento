@@ -111,13 +111,10 @@ fn resolve_target<'a>(
         .collect();
 
     if candidates.is_empty() {
-        anyhow::bail!(
-            "dish '{dish_name}' has no secret-capable deploy integration \
-             (cloudflare_worker, cloudflare_pages, railway). Add an \
-             [integrations.<id>] block to {}/dish.toml, or use the \
-             underlying CLI directly for {op}.",
-            dish.rel.display()
-        );
+        return Err(crate::errors::CliError::SecretBackendNotConfigured {
+            dish: dish.rel.display().to_string(),
+        }
+        .into());
     }
 
     let integration: &dyn bento_adapters::Integration = match integration_hint {
@@ -132,11 +129,12 @@ fn resolve_target<'a>(
         None => {
             if candidates.len() > 1 {
                 let names: Vec<_> = candidates.iter().map(|i| i.id().to_string()).collect();
-                anyhow::bail!(
-                    "dish '{dish_name}' has multiple secret-capable integrations \
-                     ({}). Disambiguate: `bento secret {op} {dish_name}:<integration> ...`",
-                    names.join(", "),
-                );
+                return Err(crate::errors::CliError::SecretTargetAmbiguous {
+                    dish: dish_name.to_string(),
+                    op: op.to_string(),
+                    available: names,
+                }
+                .into());
             }
             candidates[0]
         }
@@ -174,10 +172,7 @@ fn read_value_from_stdin() -> Result<String> {
         }
     }
     if buf.is_empty() {
-        anyhow::bail!(
-            "empty stdin — pipe the secret value in, e.g. \
-             `echo -n \"$VAL\" | bento secret put <target> NAME`"
-        );
+        return Err(crate::errors::CliError::SecretValueEmpty.into());
     }
     Ok(buf)
 }

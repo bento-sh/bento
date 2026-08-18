@@ -374,7 +374,10 @@ fn parse_pin(spec: &str) -> Result<(&str, &str)> {
         Some((tool, version)) if !tool.trim().is_empty() && !version.trim().is_empty() => {
             Ok((tool.trim(), version.trim()))
         }
-        _ => anyhow::bail!("expected `<tool>=<version>` (e.g. `go=1.22.3`), got {spec:?}"),
+        _ => Err(crate::errors::CliError::ToolchainPinInvalid {
+            spec: spec.to_string(),
+        }
+        .into()),
     }
 }
 
