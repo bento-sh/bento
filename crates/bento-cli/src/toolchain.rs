@@ -192,14 +192,11 @@ fn install_all(global: &GlobalFlags) -> Result<i32> {
     }
 
     if global.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "installed": installed,
-                "skipped": skipped,
-                "failed": failed,
-            }))?
-        );
+        crate::json::emit(&serde_json::json!({
+            "installed": installed,
+            "skipped": skipped,
+            "failed": failed,
+        }))?;
     }
 
     Ok(if failed > 0 { 1 } else { 0 })
@@ -284,7 +281,7 @@ fn list(global: &GlobalFlags) -> Result<i32> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json)?);
+        crate::json::emit(&json)?;
     } else if entries.is_empty() {
         println!("no toolchains installed under {}", store_root.display());
         println!("run `bento toolchain install` to fetch the pins from your workspace");

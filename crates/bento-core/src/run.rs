@@ -2048,7 +2048,14 @@ fn run_notify_task(
     };
 
     let exit_code = output.status.code().unwrap_or(-1);
-    let output_excerpt = build_output_excerpt(&output.stdout, &output.stderr);
+    // On failure `stderr_excerpt` already carries stderr; only keep the
+    // combined excerpt when stdout adds something, otherwise the report
+    // says the same thing twice.
+    let output_excerpt = if output.status.success() || !output.stdout.is_empty() {
+        build_output_excerpt(&output.stdout, &output.stderr)
+    } else {
+        None
+    };
     let outcome = if output.status.success() {
         TaskOutcome::Built { exit_code }
     } else {

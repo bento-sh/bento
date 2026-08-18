@@ -598,7 +598,7 @@ pub fn run(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+        crate::json::emit(&Value::Array(arr))?;
     } else {
         for r in &results {
             let icon = match r.action {

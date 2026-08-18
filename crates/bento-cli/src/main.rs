@@ -2,6 +2,7 @@ mod artifacts;
 mod cli;
 mod errors;
 mod init;
+mod json;
 mod linear_notify;
 mod login;
 mod mcp;
@@ -219,7 +220,7 @@ fn run_plan(
     };
     let plan = plan_at(&root, &opts)?;
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&plan)?);
+        crate::json::emit(&plan)?;
     } else {
         plan_print::print_human(&plan);
     }
@@ -621,7 +622,7 @@ fn emit_report(
             .with_context(|| format!("writing --report-file {}", path.display()))?;
     }
     if as_json {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        crate::json::emit(report)?;
     } else {
         run_print::print_human(report);
     }
@@ -646,7 +647,7 @@ fn run_dish_add(
     let result = scaffold::run(req, &workspace)?;
 
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::json::emit(&result)?;
     } else {
         print_scaffold_human(&result);
     }
@@ -687,7 +688,7 @@ fn run_dish_list(global: &GlobalFlags) -> anyhow::Result<i32> {
     let out = bento_core::inventory::dish_list(&workspace);
 
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::json::emit(&out)?;
     } else {
         print_dish_list_human(&out);
     }
@@ -700,7 +701,7 @@ fn run_box_list(global: &GlobalFlags) -> anyhow::Result<i32> {
     let out = bento_core::inventory::box_list(&workspace);
 
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::json::emit(&out)?;
     } else {
         print_box_list_human(&out);
     }
@@ -738,7 +739,7 @@ fn run_box_add(global: &GlobalFlags, name: String) -> anyhow::Result<i32> {
             "name": name,
             "path": target.display().to_string(),
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::json::emit(&out)?;
     } else {
         println!(
             "Created {} (empty bento). Edit `dishes = [...]` to wire dishes into it, then \
@@ -1289,7 +1290,7 @@ fn run_add(
                 "note": a.note,
             })).collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&body)?);
+        crate::json::emit(&body)?;
     } else {
         let kind = if dev { "dev dependency" } else { "dependency" };
         let plural = if added.len() == 1 { "" } else { "y" };
@@ -1461,7 +1462,7 @@ fn emit_transfer(
             "skipped": skipped,
             "failed": failed,
         });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        crate::json::emit(&payload)?;
     } else {
         println!(
             "{} {verb}: {} transferred · {} skipped · {} failed  (remote: {})",
@@ -1488,7 +1489,7 @@ fn run_cache_stats(global: &GlobalFlags) -> anyhow::Result<i32> {
             "oldest_unix_seconds": stats.oldest_unix_seconds,
             "newest_unix_seconds": stats.newest_unix_seconds,
         });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        crate::json::emit(&payload)?;
     } else {
         println!(
             "{}: {}",
@@ -1522,7 +1523,7 @@ fn run_cache_clear(global: &GlobalFlags) -> anyhow::Result<i32> {
             "cleared_entries": before.entries,
             "cleared_bytes": before.total_bytes,
         });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        crate::json::emit(&payload)?;
     } else {
         println!(
             "{} cleared {} entr{} ({}) from {}",
@@ -1595,7 +1596,7 @@ fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i3
                 force,
             })?;
             if global.json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                crate::json::emit(&report)?;
             } else {
                 migrate::print_human(&report);
             }
@@ -1618,7 +1619,7 @@ fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i3
                 force,
             })?;
             if global.json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                crate::json::emit(&report)?;
             } else {
                 migrate::print_human(&report);
             }
@@ -1639,7 +1640,7 @@ fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i3
                 force,
             })?;
             if global.json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                crate::json::emit(&report)?;
             } else {
                 migrate::print_human(&report);
             }
@@ -1660,7 +1661,7 @@ fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i3
                 force,
             })?;
             if global.json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                crate::json::emit(&report)?;
             } else {
                 migrate::print_human(&report);
             }
@@ -1681,7 +1682,7 @@ fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i3
                 force,
             })?;
             if global.json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                crate::json::emit(&report)?;
             } else {
                 migrate::print_human(&report);
             }
@@ -1702,7 +1703,7 @@ fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i3
                 force,
             })?;
             if global.json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                crate::json::emit(&report)?;
             } else {
                 migrate::print_human(&report);
             }
@@ -1828,7 +1829,7 @@ fn run_init(global: &GlobalFlags, no_detect: bool) -> anyhow::Result<i32> {
                 }))
                 .collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        crate::json::emit(&payload)?;
     } else {
         println!(
             "{} initialised bento workspace at {}",
@@ -1981,7 +1982,7 @@ fn emit_graph_json(graphs: &[bento_core::BentoGraph]) -> anyhow::Result<()> {
             levels: &g.levels,
         })
         .collect();
-    println!("{}", serde_json::to_string_pretty(&views)?);
+    crate::json::emit(&views)?;
     Ok(())
 }
 
@@ -2069,7 +2070,7 @@ fn run_doctor(
     let report = bento_core::doctor::run_with_options(&start, &aliases, options)?;
 
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        crate::json::emit(&report)?;
     } else {
         print_doctor_human(&report);
     }
@@ -2154,7 +2155,7 @@ fn run_why(global: &GlobalFlags, target: &str) -> anyhow::Result<i32> {
     }
 
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        crate::json::emit(&results)?;
     } else {
         why::print_human(prefix, &results);
     }

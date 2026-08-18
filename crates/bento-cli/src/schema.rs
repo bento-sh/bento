@@ -80,8 +80,7 @@ const LISTINGS: &[SchemaListing] = &[
 pub fn run(as_json: bool, target: Option<SchemaTarget>) -> Result<i32> {
     let Some(target) = target else {
         if as_json {
-            let json = serde_json::to_string_pretty(LISTINGS)?;
-            println!("{json}");
+            crate::json::emit(LISTINGS)?;
         } else {
             print_listing();
         }
@@ -106,7 +105,7 @@ fn render(target: SchemaTarget) -> Result<String> {
         SchemaTarget::GarnishPayload => render_one::<GarnishPayload>(),
         SchemaTarget::Prime => render_one::<PrimeOutput>(),
     };
-    Ok(serde_json::to_string_pretty(&schema)?)
+    Ok(crate::json::to_string(&schema)?)
 }
 
 fn render_one<T: JsonSchema>() -> schemars::Schema {

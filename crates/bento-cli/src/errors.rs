@@ -473,7 +473,7 @@ pub fn emit(err: &anyhow::Error, as_json: bool) {
         let structured = classify(err);
         // If serde_json somehow fails, fall back to a human line on stderr
         // so the user isn't left with nothing.
-        match serde_json::to_string_pretty(&structured) {
+        match crate::json::to_string(&structured) {
             Ok(json) => println!("{json}"),
             Err(e) => eprintln!(
                 "{}: {err:#}\n(json emit failed: {e})",

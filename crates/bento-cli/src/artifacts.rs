@@ -26,7 +26,7 @@ pub fn run(global: &GlobalFlags) -> Result<i32> {
                 )
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        crate::json::emit(&payload)?;
     } else if by_dish.is_empty() {
         println!(
             "{} no resolved artefacts — check that your dishes declare [outputs] \

@@ -18,7 +18,7 @@ pub fn run(global: &GlobalFlags) -> Result<i32> {
     let out = prime::compute(&workspace)?;
 
     if global.json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::json::emit(&out)?;
     } else {
         print_human(&out);
     }
