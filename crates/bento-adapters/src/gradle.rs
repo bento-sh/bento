@@ -192,31 +192,12 @@ fn java(version: String) -> ToolVersion {
     }
 }
 
-/// Pick the Gradle invocation for `dir`: the wrapper when this dir or any
-/// ancestor up to the repo root ships one, system `gradle` otherwise.
-///
-/// A multi-project build carries `gradlew` only at the root, so every
-/// subproject dish needs `../gradlew` (or deeper) — hard-coding
-/// `./gradlew` broke the monorepo case, which is the case bento exists
-/// for. Bounded at `.git` / `bento.toml` so we never escape the repo.
+/// Pick the Gradle invocation for `dir`. A multi-project build carries
+/// `gradlew` only at the root, so every subproject dish needs
+/// `../gradlew` (or deeper) — hard-coding `./gradlew` broke the monorepo
+/// case, which is the case bento exists for.
 fn invocation(dir: &Path) -> String {
-    let mut current = Some(dir);
-    let mut depth = 0usize;
-    while let Some(d) = current {
-        if d.join("gradlew").is_file() {
-            return if depth == 0 {
-                "./gradlew".to_string()
-            } else {
-                format!("{}gradlew", "../".repeat(depth))
-            };
-        }
-        if d.join(".git").exists() || d.join("bento.toml").is_file() {
-            break;
-        }
-        depth += 1;
-        current = d.parent();
-    }
-    "gradle".to_string()
+    crate::jvm::wrapper_invocation(dir, "gradlew", "gradle")
 }
 
 fn read_first_nonempty_line(path: &Path) -> Result<Option<String>> {

@@ -1007,7 +1007,7 @@ fn scaffold_maven(dish_abs: &Path, dish_name: &str) -> Result<(Vec<PathBuf>, Vec
     );
     let version_file = format!("{java_version}\n");
     // dish.toml is empty of [tasks.*] — the maven adapter's defaults
-    // (mvn package -DskipTests / mvn test / mvn verify -DskipTests) are
+    // (mvn -B package -DskipTests / test / verify -DskipTests) are
     // exactly right for a fresh project.
     let dish_toml = format!(
         "name = \"{dish_name}\"\n\

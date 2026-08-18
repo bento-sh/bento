@@ -3,13 +3,14 @@
 //! - Detects: `pom.xml` at the dish root.
 //! - Fingerprints: `pom.xml` (Maven has no separate lockfile — pom.xml
 //!   IS the lockfile-equivalent because dependency versions are pinned
-//!   inline).
+//!   inline), plus `mvnw`, `.mvn/**` and `settings.xml`.
 //! - Toolchain pin (priority): `maven.compiler.release` > `maven.compiler.target`
 //!   > `maven.compiler.source` from `pom.xml`'s `<properties>` block.
-//! - Install: `mvn dependency:resolve`.
-//! - Default tasks: `mvn package -DskipTests` (build), `mvn test` (test),
-//!   `mvn verify -DskipTests` (lint — runs configured plugins like
-//!   checkstyle, spotbugs, enforcer).
+//! - Install: `mvnw`/`mvn dependency:resolve`.
+//! - Default tasks: `package -DskipTests` (build), `test` (test),
+//!   `verify -DskipTests` (lint — runs configured plugins like
+//!   checkstyle, spotbugs, enforcer). All run `-B` through the
+//!   wrapper when the reactor ships one.
 //!
 //! XML parsing: regex on the three property tags. Real users with
 //! exotic pom configurations (build profiles, parent inheritance,
@@ -25,7 +26,19 @@ use crate::adapter::{DefaultTask, LanguageAdapter, TaskContext, ToolVersion};
 
 pub struct MavenAdapter;
 
-const FINGERPRINT: &[&str] = &["pom.xml", ".java-version", ".sdkmanrc", ".tool-versions"];
+const FINGERPRINT: &[&str] = &[
+    "pom.xml",
+    // The wrapper pins Maven's own version and `.mvn/jvm.config` /
+    // `.mvn/maven.config` inject JVM + CLI flags into every build;
+    // `settings.xml` picks the repositories a resolve talks to. All
+    // change what a build produces, none of them is `pom.xml`.
+    "mvnw",
+    ".mvn/**",
+    "settings.xml",
+    ".java-version",
+    ".sdkmanrc",
+    ".tool-versions",
+];
 
 impl LanguageAdapter for MavenAdapter {
     fn id(&self) -> &str {
@@ -78,10 +91,17 @@ impl LanguageAdapter for MavenAdapter {
     }
 
     fn install(&self, ctx: &TaskContext) -> Result<()> {
-        let mut cmd = Command::new("mvn");
-        cmd.args(["dependency:resolve", "-q"]);
+        let program = invocation(&ctx.dish_dir);
+        // The wrapper can be several dirs up; resolve it against the dish
+        // dir so the spawn doesn't depend on bento's own cwd.
+        let mut cmd = if program == "mvn" {
+            Command::new("mvn")
+        } else {
+            Command::new(ctx.dish_dir.join(&program))
+        };
+        cmd.args(["-B", "dependency:resolve", "-q"]);
         ctx.apply_env(&mut cmd);
-        crate::adapter::run_install_cmd(ctx, &mut cmd, "mvn dependency:resolve")
+        crate::adapter::run_install_cmd(ctx, &mut cmd, &format!("{program} dependency:resolve"))
     }
 
     fn resolved_toolchain_fingerprint(&self) -> Option<String> {
@@ -94,21 +114,25 @@ impl LanguageAdapter for MavenAdapter {
         vec!["target/**".into()]
     }
 
-    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
+    fn default_tasks(&self, dir: &Path) -> Vec<DefaultTask> {
         // Whole tree so a `<modules>` aggregator dish sees every
         // module's `src/`; `target/` is pruned by the walker.
         let inputs = vec!["**".into()];
+        // -B (batch mode): no ANSI progress spinners, no interactive
+        // prompts. Maven's default output is a download-progress
+        // firehose that bloats every captured log an agent has to read.
+        let mvn = format!("{} -B", invocation(dir));
 
         vec![
             DefaultTask {
                 name: "build".into(),
-                run: "mvn package -DskipTests".into(),
+                run: format!("{mvn} package -DskipTests"),
                 inputs: Some(inputs.clone()),
                 outputs: Some(vec!["target/*.jar".into(), "target/*.war".into()]),
             },
             DefaultTask {
                 name: "test".into(),
-                run: "mvn test".into(),
+                run: format!("{mvn} test"),
                 inputs: Some({
                     let mut v = inputs.clone();
                     v.push("src/test/**".into());
@@ -120,7 +144,7 @@ impl LanguageAdapter for MavenAdapter {
                 // `verify` runs configured quality plugins (checkstyle,
                 // spotbugs, enforcer, etc.) without re-running tests.
                 name: "lint".into(),
-                run: "mvn verify -DskipTests".into(),
+                run: format!("{mvn} verify -DskipTests"),
                 inputs: Some({
                     let mut v = inputs;
                     v.push("checkstyle.xml".into());
@@ -168,6 +192,14 @@ fn extract_property(content: &str, name: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
+}
+
+/// Pick the Maven invocation for `dir`: `./mvnw` (or `../mvnw`, …) when
+/// the reactor ships a wrapper, system `mvn` otherwise. The wrapper is
+/// what pins Maven's version, and a multi-module build keeps it only at
+/// the aggregator root.
+fn invocation(dir: &Path) -> String {
+    crate::jvm::wrapper_invocation(dir, "mvnw", "mvn")
 }
 
 fn read_first_nonempty_line(path: &Path) -> Result<Option<String>> {
@@ -347,11 +379,35 @@ mod tests {
 
     #[test]
     fn default_tasks_use_mvn_lifecycle() {
-        let tasks = MavenAdapter.default_tasks(Path::new("."));
+        let tmp = tmp_with(&[("pom.xml", ""), (".git", "")]);
+        let tasks = MavenAdapter.default_tasks(tmp.path());
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
-        assert_eq!(tasks[0].run, "mvn package -DskipTests");
-        assert_eq!(tasks[1].run, "mvn test");
-        assert_eq!(tasks[2].run, "mvn verify -DskipTests");
+        assert_eq!(tasks[0].run, "mvn -B package -DskipTests");
+        assert_eq!(tasks[1].run, "mvn -B test");
+        assert_eq!(tasks[2].run, "mvn -B verify -DskipTests");
+    }
+
+    #[test]
+    fn default_tasks_prefer_the_wrapper() {
+        let tmp = tmp_with(&[("pom.xml", ""), ("mvnw", "#!/bin/sh\n"), ("bento.toml", "")]);
+        let sub = tmp.path().join("services/api");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            MavenAdapter.default_tasks(tmp.path())[0].run,
+            "./mvnw -B package -DskipTests"
+        );
+        assert_eq!(
+            MavenAdapter.default_tasks(&sub)[0].run,
+            "../../mvnw -B package -DskipTests"
+        );
+    }
+
+    #[test]
+    fn fingerprint_covers_wrapper_and_settings() {
+        let fp = MavenAdapter.fingerprint_files();
+        for f in ["pom.xml", "mvnw", ".mvn/**", "settings.xml"] {
+            assert!(fp.iter().any(|s| s == f), "missing {f}");
+        }
     }
 }

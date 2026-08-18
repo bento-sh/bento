@@ -23,6 +23,7 @@ mod diagnostic_record;
 mod go;
 mod gradle;
 mod integration;
+mod jvm;
 mod linear;
 mod maven;
 mod node_common;
