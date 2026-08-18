@@ -118,7 +118,7 @@ impl LanguageAdapter for YarnAdapter {
     }
 
     fn diagnostic_hook(&self, task: &str) -> Option<DiagnosticHook> {
-        node_eslint_hook(task)
+        node_eslint_hook(task, "yarn")
     }
 
     fn detected_tasks(&self, dir: &Path) -> Option<Vec<DetectedTask>> {

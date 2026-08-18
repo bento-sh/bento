@@ -100,7 +100,7 @@ impl LanguageAdapter for GoAdapter {
         // defer.
         match task {
             "lint" => Some(DiagnosticHook {
-                rerun: DiagnosticRerun::AppendArgs(vec!["--out-format=json".into()]),
+                rerun: DiagnosticRerun::AppendArgs(vec![golangci_json_flag().into()]),
                 parser: DiagnosticParser::Builtin(ParserId::GolangciLint),
             }),
             _ => None,
@@ -171,6 +171,23 @@ fn parse_go_directive(content: &str) -> Option<ToolVersion> {
     None
 }
 
+/// golangci-lint v2 (2025) dropped `--out-format`; JSON is selected via
+/// `--output.json.path stdout`. Probe once per process.
+fn golangci_json_flag() -> &'static str {
+    let v2 = crate::probe::memoised("golangci-lint", &["version"])
+        .and_then(|out| {
+            let rest = out.split("version ").nth(1)?;
+            rest.trim_start_matches('v').chars().next()
+        })
+        .map(|major| major == '2')
+        .unwrap_or(false);
+    if v2 {
+        "--output.json.path stdout"
+    } else {
+        "--out-format=json"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,7 +204,11 @@ mod tests {
         let h = go.diagnostic_hook("lint").expect("lint should have a hook");
         assert_eq!(h.parser, DiagnosticParser::Builtin(ParserId::GolangciLint));
         match h.rerun {
-            DiagnosticRerun::AppendArgs(args) => assert_eq!(args, vec!["--out-format=json"]),
+            // v1 vs v2 flag depends on the host's golangci-lint.
+            DiagnosticRerun::AppendArgs(args) => assert!(
+                args == vec!["--out-format=json"] || args == vec!["--output.json.path stdout"],
+                "{args:?}"
+            ),
             _ => panic!("expected AppendArgs"),
         }
         assert!(go.diagnostic_hook("build").is_none());

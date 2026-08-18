@@ -108,7 +108,7 @@ impl LanguageAdapter for PnpmAdapter {
     }
 
     fn diagnostic_hook(&self, task: &str) -> Option<DiagnosticHook> {
-        node_eslint_hook(task)
+        node_eslint_hook(task, "pnpm exec")
     }
 
     fn detected_tasks(&self, dir: &Path) -> Option<Vec<DetectedTask>> {

@@ -2105,6 +2105,20 @@ impl TaskAttempt {
     }
 }
 
+/// Append diagnostic flags to a task command, landing them on the tool
+/// rather than on whatever follows a `--` passthrough
+/// (`cargo clippy -- -D warnings`).
+fn append_args(run: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return run.to_string();
+    }
+    let extra = args.join(" ");
+    match run.find(" -- ") {
+        Some(i) => format!("{} {}{}", &run[..i], extra, &run[i..]),
+        None => format!("{run} {extra}"),
+    }
+}
+
 /// Cap for `ExecutedTask.output_excerpt`. `railway up` / `vercel
 /// deploy` / similar CLIs typically print the build-log URL near the
 /// tail of their output (after progress chatter), so we tail-truncate
@@ -2165,13 +2179,7 @@ fn capture_diagnostics(
     };
 
     let modified_run = match &hook.rerun {
-        DiagnosticRerun::AppendArgs(args) => {
-            if args.is_empty() {
-                task.run.clone()
-            } else {
-                format!("{} {}", task.run, args.join(" "))
-            }
-        }
+        DiagnosticRerun::AppendArgs(args) => append_args(&task.run, args),
         DiagnosticRerun::Replace(cmd) => cmd.clone(),
     };
 
@@ -3461,6 +3469,23 @@ run = "true"
         );
         let ws = Workspace::load(tmp.path()).unwrap();
         assert!(super::container_plan(&ws).is_none());
+    }
+
+    #[test]
+    fn append_args_lands_before_passthrough_separator() {
+        let a = |s: &str| vec![s.to_string()];
+        assert_eq!(
+            super::append_args(
+                "cargo clippy --locked -- -D warnings",
+                &a("--message-format=json")
+            ),
+            "cargo clippy --locked --message-format=json -- -D warnings"
+        );
+        assert_eq!(
+            super::append_args("golangci-lint run", &a("--out-format=json")),
+            "golangci-lint run --out-format=json"
+        );
+        assert_eq!(super::append_args("x", &[]), "x");
     }
 
     #[test]

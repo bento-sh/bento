@@ -226,13 +226,17 @@ pub fn combine_probes(pairs: &[(&str, Option<String>)]) -> Option<String> {
 /// captures eslint's output. That's the lossier-but-still-useful
 /// trade — the underlying failure is reported via stderr regardless;
 /// diagnostics are strictly additive.
-pub fn node_eslint_hook(task: &str) -> Option<crate::diagnostic::DiagnosticHook> {
+///
+/// `runner` is the package manager's local-bin exec prefix (`npx
+/// --no-install`, `pnpm exec`, `yarn`, `bunx`) — eslint is a devDep,
+/// never on PATH, and in a workspace its `.bin` lives at the root.
+pub fn node_eslint_hook(task: &str, runner: &str) -> Option<crate::diagnostic::DiagnosticHook> {
     use crate::diagnostic::{DiagnosticHook, DiagnosticParser, DiagnosticRerun, ParserId};
     if task != "lint" {
         return None;
     }
     Some(DiagnosticHook {
-        rerun: DiagnosticRerun::Replace("eslint --format=json".into()),
+        rerun: DiagnosticRerun::Replace(format!("{runner} eslint --format=json .")),
         parser: DiagnosticParser::Builtin(ParserId::Eslint),
     })
 }
@@ -398,10 +402,10 @@ mod tests {
     #[test]
     fn node_eslint_hook_returns_replace_for_lint() {
         use crate::diagnostic::{DiagnosticParser, DiagnosticRerun, ParserId};
-        let h = node_eslint_hook("lint").expect("lint should have a hook");
+        let h = node_eslint_hook("lint", "pnpm exec").expect("lint should have a hook");
         assert_eq!(h.parser, DiagnosticParser::Builtin(ParserId::Eslint));
         match h.rerun {
-            DiagnosticRerun::Replace(s) => assert_eq!(s, "eslint --format=json"),
+            DiagnosticRerun::Replace(s) => assert_eq!(s, "pnpm exec eslint --format=json ."),
             _ => panic!("expected Replace"),
         }
     }
@@ -409,7 +413,10 @@ mod tests {
     #[test]
     fn node_eslint_hook_none_for_other_tasks() {
         for t in ["build", "test", "install", "migrate"] {
-            assert!(node_eslint_hook(t).is_none(), "{t} should not have a hook");
+            assert!(
+                node_eslint_hook(t, "npx --no-install").is_none(),
+                "{t} should not have a hook"
+            );
         }
     }
 
