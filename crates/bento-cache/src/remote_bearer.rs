@@ -10,6 +10,10 @@
 //!
 //! Wire protocol:
 //!
+//! Every request carries `x-bento-cas-version:
+//! <bento_cas_protocol::CAS_PROTOCOL_VERSION>` so a server can tell which
+//! wire contract the client speaks.
+//!
 //! - `HEAD <base>/cache/<blake3>` — 200 hit, 404 miss, 401/403 auth.
 //! - `GET  <base>/cache/<blake3>` — 200 + body, 404 miss, 413 over-quota.
 //! - `PUT  <base>/cache/<blake3>` — 2xx stored, 413 over-quota, 4xx auth.
@@ -130,10 +134,16 @@ impl BearerRemote {
     }
 
     fn with_http_base(http_base: String, display_url: String, token: String) -> Result<Self> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            bento_cas_protocol::CAS_VERSION_HEADER,
+            bento_cas_protocol::CAS_PROTOCOL_VERSION.into(),
+        );
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .user_agent(concat!("bento/", env!("CARGO_PKG_VERSION")))
+            .default_headers(headers)
             .build()
             .context("building reqwest client for bento:// remote cache")?;
 

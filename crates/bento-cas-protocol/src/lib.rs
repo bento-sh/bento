@@ -26,6 +26,22 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
+// Protocol version
+// ---------------------------------------------------------------------------
+
+/// Version of the CAS wire protocol this build speaks.
+///
+/// Clients send it as [`CAS_VERSION_HEADER`] on every request so a server
+/// can tell an old CLI apart from a new one — the difference between
+/// serving it a compatible response and failing it with an explanation.
+/// Bump only for a change existing clients can't parse; additive fields
+/// are forward-compatible and don't need one.
+pub const CAS_PROTOCOL_VERSION: u32 = 1;
+
+/// Header carrying [`CAS_PROTOCOL_VERSION`].
+pub const CAS_VERSION_HEADER: &str = "x-bento-cas-version";
+
+// ---------------------------------------------------------------------------
 // Team + token identifiers
 // ---------------------------------------------------------------------------
 

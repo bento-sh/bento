@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use bento_cache::{BearerRemote, CacheKey, LocalCache, RemoteCache, TaskResult};
-use wiremock::matchers::{bearer_token, method, path};
+use wiremock::matchers::{bearer_token, header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TOKEN: &str = "test.jwt.token";
@@ -240,6 +240,26 @@ fn get_retries_once_on_5xx() {
     assert!(remote.get(&key, &dest).unwrap());
     assert_eq!(count.load(Ordering::SeqCst), 2, "expected one retry");
     assert_eq!(std::fs::read(&dest).unwrap(), bundle_bytes());
+}
+
+#[test]
+fn every_request_announces_the_cas_protocol_version() {
+    let (server, rt) = spawn_server();
+    rt.block_on(
+        Mock::given(method("HEAD"))
+            .and(path(format!("/cache/{HEX}")))
+            .and(header(
+                bento_cas_protocol::CAS_VERSION_HEADER,
+                bento_cas_protocol::CAS_PROTOCOL_VERSION
+                    .to_string()
+                    .as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server),
+    );
+
+    let remote = make_remote(&server.uri());
+    assert!(remote.has(&CacheKey::from_hex(HEX)));
 }
 
 #[test]
