@@ -655,6 +655,24 @@ pub enum CacheAction {
     /// Clear the local cache
     Clear,
 
+    /// Evict local entries over a size budget or past an age
+    ///
+    /// Bounded eviction for the local tier — the alternative to
+    /// `clear`, which throws away every warm entry. At least one bound
+    /// is required; with both, the cache ends up satisfying both.
+    /// Entries go oldest-first, and each bundle's `bento why` manifest
+    /// goes with it.
+    Prune {
+        /// Total size budget, e.g. `2GiB`, `500MB`, `1073741824`.
+        /// Suffixes are binary (1 KB = 1024 B), matching `du -h`.
+        #[arg(long, value_name = "SIZE", value_parser = crate::parse_byte_size)]
+        max_size: Option<u64>,
+
+        /// Maximum entry age, e.g. `7d`, `24h`, `30m`.
+        #[arg(long, value_name = "DURATION", value_parser = crate::parse_age)]
+        older_than: Option<std::time::Duration>,
+    },
+
     /// Push the local cache to remote (force)
     Push,
 

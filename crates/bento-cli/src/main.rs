@@ -1316,9 +1316,115 @@ fn run_cache(global: &GlobalFlags, action: CacheAction) -> anyhow::Result<i32> {
     match action {
         CacheAction::Stats => run_cache_stats(global),
         CacheAction::Clear => run_cache_clear(global),
+        CacheAction::Prune {
+            max_size,
+            older_than,
+        } => run_cache_prune(global, max_size, older_than),
         CacheAction::Push => run_cache_push(global),
         CacheAction::Pull => run_cache_pull(global),
     }
+}
+
+/// Parse a byte size: bare digits, or digits plus a unit suffix.
+/// Suffixes are binary — `1MB` is 1 MiB — because the number people
+/// compare it against came out of `du -h`.
+pub fn parse_byte_size(raw: &str) -> Result<u64, String> {
+    let s = raw.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (digits, unit) = s.split_at(split);
+    let n: u64 = digits.parse().map_err(|_| {
+        format!("expected a size like `2GiB`, `500MB` or `1073741824`, got `{raw}`")
+    })?;
+    const K: u64 = 1024;
+    let scale = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => K,
+        "m" | "mb" | "mib" => K * K,
+        "g" | "gb" | "gib" => K * K * K,
+        "t" | "tb" | "tib" => K * K * K * K,
+        other => {
+            return Err(format!(
+                "unknown size unit `{other}` (use B, KB, MB, GB or TB)"
+            ))
+        }
+    };
+    n.checked_mul(scale)
+        .ok_or_else(|| format!("size `{raw}` overflows"))
+}
+
+/// Parse an age: `<n><unit>` where unit is s / m / h / d / w.
+pub fn parse_age(raw: &str) -> Result<std::time::Duration, String> {
+    let s = raw.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (digits, unit) = s.split_at(split);
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("expected a duration like `7d`, `24h` or `30m`, got `{raw}`"))?;
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    let scale = match unit.trim() {
+        "" => return Err(format!("duration `{raw}` needs a unit (s, m, h, d or w)")),
+        "s" => 1,
+        "m" => MINUTE,
+        "h" => HOUR,
+        "d" => DAY,
+        "w" => 7 * DAY,
+        other => {
+            return Err(format!(
+                "unknown duration unit `{other}` (use s, m, h, d or w)"
+            ))
+        }
+    };
+    n.checked_mul(scale)
+        .map(std::time::Duration::from_secs)
+        .ok_or_else(|| format!("duration `{raw}` overflows"))
+}
+
+fn run_cache_prune(
+    global: &GlobalFlags,
+    max_size: Option<u64>,
+    older_than: Option<std::time::Duration>,
+) -> anyhow::Result<i32> {
+    if max_size.is_none() && older_than.is_none() {
+        anyhow::bail!(
+            "`bento cache prune` needs a bound — pass --max-size <SIZE> and/or \
+             --older-than <DURATION> (use `bento cache clear` to drop everything)"
+        );
+    }
+    let root = bento_core::default_cache_root()?;
+    let cache = bento_core::LocalCache::new(&root);
+    let removed = cache.prune(max_size, older_than)?;
+    let after = cache.stats()?;
+
+    if global.json {
+        let payload = serde_json::json!({
+            "root": root.display().to_string(),
+            "max_size_bytes": max_size,
+            "older_than_seconds": older_than.map(|d| d.as_secs()),
+            "pruned_entries": removed.removed_entries,
+            "pruned_bytes": removed.removed_bytes,
+            "remaining_entries": after.entries,
+            "remaining_bytes": after.total_bytes,
+        });
+        crate::json::emit(&payload)?;
+    } else {
+        println!(
+            "{} pruned {} entr{} ({}) · {} left ({}) in {}",
+            style::green("✓"),
+            removed.removed_entries,
+            if removed.removed_entries == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            format_bytes(removed.removed_bytes),
+            after.entries,
+            format_bytes(after.total_bytes),
+            style::cyan(&root.display().to_string()),
+        );
+    }
+    Ok(0)
 }
 
 /// Upload every local bundle not yet present on the remote. HEADs each
@@ -2227,5 +2333,32 @@ mod workspace_root_tests {
             got.canonicalize().unwrap(),
             tmp.path().canonicalize().unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod prune_arg_tests {
+    use super::{parse_age, parse_byte_size};
+
+    #[test]
+    fn byte_sizes_parse_bare_and_suffixed() {
+        assert_eq!(parse_byte_size("1024"), Ok(1024));
+        assert_eq!(parse_byte_size("2GiB"), Ok(2 * 1024 * 1024 * 1024));
+        assert_eq!(parse_byte_size("500mb"), Ok(500 * 1024 * 1024));
+        assert_eq!(parse_byte_size("1 KB"), Ok(1024));
+        assert!(parse_byte_size("").is_err());
+        assert!(parse_byte_size("lots").is_err());
+        assert!(parse_byte_size("5 parsecs").is_err());
+        assert!(parse_byte_size("99999999999999999999TB").is_err());
+    }
+
+    #[test]
+    fn ages_parse_with_a_unit() {
+        assert_eq!(parse_age("30m").map(|d| d.as_secs()), Ok(1800));
+        assert_eq!(parse_age("7d").map(|d| d.as_secs()), Ok(604_800));
+        assert_eq!(parse_age("2w").map(|d| d.as_secs()), Ok(1_209_600));
+        // Bare digits are ambiguous here in a way they aren't for sizes.
+        assert!(parse_age("7").is_err());
+        assert!(parse_age("7y").is_err());
     }
 }

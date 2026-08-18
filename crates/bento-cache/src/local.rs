@@ -45,6 +45,15 @@ pub struct CacheStats {
     pub newest_unix_seconds: Option<u64>,
 }
 
+/// What one [`LocalCache::prune`] pass removed. Byte count covers
+/// bundles only; the manifest sidecars that go with them are noise next
+/// to a tarball.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneOutcome {
+    pub removed_entries: usize,
+    pub removed_bytes: u64,
+}
+
 /// Local cache rooted at `<root>`.
 #[derive(Debug, Clone)]
 pub struct LocalCache {
@@ -147,6 +156,56 @@ impl LocalCache {
             }
         }
         Ok(())
+    }
+
+    /// Evict entries until the cache satisfies both bounds: nothing older
+    /// than `older_than`, and no more than `max_bytes` in total. Either
+    /// may be `None`; both `None` is a no-op.
+    ///
+    /// Eviction is oldest-mtime-first, which is the closest thing to LRU
+    /// available without tracking reads — `get` doesn't touch the bundle,
+    /// so mtime is really "least recently *written*". Good enough for a
+    /// disk-budget knob; a true LRU would mean writing on every hit.
+    pub fn prune(
+        &self,
+        max_bytes: Option<u64>,
+        older_than: Option<std::time::Duration>,
+    ) -> Result<PruneOutcome> {
+        let mut outcome = PruneOutcome::default();
+        if !self.root.is_dir() || (max_bytes.is_none() && older_than.is_none()) {
+            return Ok(outcome);
+        }
+
+        let now = std::time::SystemTime::now();
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !is_bundle(&path) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            entries.push((path, meta.len(), meta.modified().unwrap_or(now)));
+        }
+        entries.sort_by_key(|(_, _, mtime)| *mtime);
+
+        let mut live: u64 = entries.iter().map(|(_, len, _)| len).sum();
+        for (path, len, mtime) in entries {
+            let too_old =
+                older_than.is_some_and(|max| now.duration_since(mtime).is_ok_and(|age| age > max));
+            let over_budget = max_bytes.is_some_and(|cap| live > cap);
+            if !too_old && !over_budget {
+                continue;
+            }
+            remove_entry(&path)?;
+            live -= len;
+            outcome.removed_entries += 1;
+            outcome.removed_bytes += len;
+        }
+        Ok(outcome)
     }
 
     /// Write an explanation sidecar for a cache entry. Atomic via `.tmp`
@@ -349,6 +408,17 @@ fn check_meta(bytes: Option<&[u8]>) -> Result<Metadata> {
 
 fn is_bundle(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "tar")
+}
+
+/// Delete a bundle and the manifest sidecar that explains it. A sidecar
+/// left without its bundle is what `cache pull` treats as "fetch me", so
+/// leaving one behind would resurrect what we just evicted.
+fn remove_entry(bundle: &Path) -> Result<()> {
+    std::fs::remove_file(bundle).with_context(|| format!("removing {}", bundle.display()))?;
+    if let Some(hex) = bundle.file_stem().and_then(|s| s.to_str()) {
+        let _ = std::fs::remove_file(bundle.with_file_name(format!("{hex}.inputs.json")));
+    }
+    Ok(())
 }
 
 fn write_bundle<W: Write>(
@@ -865,6 +935,114 @@ mod tests {
 
         local.clear().unwrap();
         assert_eq!(local.stats().unwrap(), CacheStats::default());
+    }
+
+    /// Backdate a bundle (and its sidecar) so age-based pruning is
+    /// testable without sleeping.
+    fn age_entry(local: &LocalCache, key: &CacheKey, seconds: u64) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds);
+        let f = File::options()
+            .write(true)
+            .open(local.bundle_path(key))
+            .unwrap();
+        f.set_modified(when).unwrap();
+    }
+
+    fn seed(local: &LocalCache, dish: &Path, seed: &str, bytes: usize) -> CacheKey {
+        std::fs::write(dish.join("out.bin"), vec![b'x'; bytes]).unwrap();
+        let key = make_key(seed);
+        local
+            .put(
+                &key,
+                dish,
+                &["out.bin".into()],
+                None,
+                &[],
+                &TaskResult::default(),
+            )
+            .unwrap();
+        local
+            .put_manifest(
+                &key,
+                &InputManifest {
+                    version: InputManifest::CURRENT_VERSION,
+                    task_name: seed.into(),
+                    run: "true".into(),
+                    dish: "d".into(),
+                    adapter: None,
+                    toolchain: None,
+                    bento_version: "0.1".into(),
+                    host: None,
+                    env_vars: vec![],
+                    files: vec![],
+                },
+            )
+            .unwrap();
+        key
+    }
+
+    #[test]
+    fn prune_by_age_drops_stale_entries_and_their_sidecars() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        let dish = tempfile::tempdir().unwrap();
+
+        let old = seed(&local, dish.path(), "old", 64);
+        let fresh = seed(&local, dish.path(), "fresh", 64);
+        age_entry(&local, &old, 10 * 24 * 3600);
+
+        let outcome = local
+            .prune(None, Some(std::time::Duration::from_secs(7 * 24 * 3600)))
+            .unwrap();
+        assert_eq!(outcome.removed_entries, 1);
+        assert!(outcome.removed_bytes > 0);
+        assert!(!local.contains(&old));
+        assert!(local.contains(&fresh));
+        // The sidecar has to go too, or `cache pull` would fetch it back.
+        assert!(local.read_manifest(&old).unwrap().is_none());
+        assert!(local.read_manifest(&fresh).unwrap().is_some());
+    }
+
+    #[test]
+    fn prune_by_size_evicts_oldest_first_until_under_budget() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        let dish = tempfile::tempdir().unwrap();
+
+        // Same payload size each, backdated in order.
+        let keys: Vec<_> = ["a", "b", "c", "d"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let key = seed(&local, dish.path(), name, 4096);
+                age_entry(&local, &key, (4 - i as u64) * 3600);
+                key
+            })
+            .collect();
+
+        let total = local.stats().unwrap().total_bytes;
+        let budget = total / 2;
+        let outcome = local.prune(Some(budget), None).unwrap();
+
+        assert!(outcome.removed_entries >= 2, "{outcome:?}");
+        assert!(local.stats().unwrap().total_bytes <= budget);
+        // Oldest go first: whatever survives must be a suffix of the list.
+        let survivors: Vec<bool> = keys.iter().map(|k| local.contains(k)).collect();
+        assert!(
+            survivors.windows(2).all(|w| !w[0] || w[1]),
+            "evicted out of age order: {survivors:?}"
+        );
+    }
+
+    #[test]
+    fn prune_without_bounds_removes_nothing() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        let dish = tempfile::tempdir().unwrap();
+        seed(&local, dish.path(), "keep", 64);
+
+        assert_eq!(local.prune(None, None).unwrap(), PruneOutcome::default());
+        assert_eq!(local.stats().unwrap().entries, 1);
     }
 
     #[test]
