@@ -6,7 +6,7 @@
 //!   `.rustfmt.toml`.
 //! - Toolchain pin (priority): `rust-toolchain.toml`'s `toolchain.channel`,
 //!   then the legacy `rust-toolchain` single-line file.
-//! - Install: `cargo fetch --locked`.
+//! - Install: `cargo fetch` (`--locked` when a Cargo.lock governs the dish).
 //! - Default tasks: `cargo build`, `cargo check`, `cargo test`,
 //!   `cargo clippy --all-targets`.
 
@@ -83,9 +83,12 @@ impl LanguageAdapter for CargoAdapter {
 
     fn install(&self, ctx: &TaskContext) -> Result<()> {
         let mut cmd = Command::new("cargo");
-        cmd.args(["fetch", "--locked"]);
+        cmd.arg("fetch");
+        if has_lockfile(&ctx.dish_dir) {
+            cmd.arg("--locked");
+        }
         ctx.apply_env(&mut cmd);
-        crate::adapter::run_install_cmd(ctx, &mut cmd, "cargo fetch --locked")
+        crate::adapter::run_install_cmd(ctx, &mut cmd, "cargo fetch")
     }
 
     fn add(&self, ctx: &TaskContext, packages: &[&str], opts: AddOptions) -> Result<Vec<Added>> {
@@ -142,16 +145,22 @@ impl LanguageAdapter for CargoAdapter {
         vec!["target/**".into()]
     }
 
-    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
+    fn default_tasks(&self, dir: &Path) -> Vec<DefaultTask> {
         // Whole tree: a workspace-root dish must see `crates/*/src`, and
         // `.cargo/config.toml` / `rust-toolchain.toml` / `build.rs`
         // siblings all shape the build. `target/` is derived (above).
         let inputs = vec!["**".into()];
+        // `--locked` against a dish with no Cargo.lock fails outright
+        // ("the lock file needs to be updated but --locked was passed"),
+        // which is exactly the state a freshly scaffolded crate is in.
+        // Same posture as the node adapters, which drop `npm ci` /
+        // `--immutable` on a cold project.
+        let locked = if has_lockfile(dir) { " --locked" } else { "" };
 
         vec![
             DefaultTask {
                 name: "build".into(),
-                run: "cargo build --locked".into(),
+                run: format!("cargo build{locked}"),
                 inputs: Some(inputs.clone()),
                 // Leave outputs unset: cargo's target dir lives outside
                 // the dish tree by default, and users tune --target-dir
@@ -161,24 +170,41 @@ impl LanguageAdapter for CargoAdapter {
             },
             DefaultTask {
                 name: "check".into(),
-                run: "cargo check --locked --all-targets".into(),
+                run: format!("cargo check{locked} --all-targets"),
                 inputs: Some(inputs.clone()),
                 outputs: None,
             },
             DefaultTask {
                 name: "test".into(),
-                run: "cargo test --locked".into(),
+                run: format!("cargo test{locked}"),
                 inputs: Some(inputs.clone()),
                 outputs: None,
             },
             DefaultTask {
                 name: "lint".into(),
-                run: "cargo clippy --locked --all-targets -- -D warnings".into(),
+                run: format!("cargo clippy{locked} --all-targets -- -D warnings"),
                 inputs: Some(inputs),
                 outputs: None,
             },
         ]
     }
+}
+
+/// Is there a `Cargo.lock` governing `dir`? Workspace members don't
+/// carry their own — the lock sits next to the workspace-root
+/// `Cargo.toml` — so walk up, bounded at the repo root.
+fn has_lockfile(dir: &Path) -> bool {
+    let mut current = Some(dir);
+    while let Some(d) = current {
+        if d.join("Cargo.lock").is_file() {
+            return true;
+        }
+        if d.join(".git").exists() || d.join("bento.toml").is_file() {
+            break;
+        }
+        current = d.parent();
+    }
+    false
 }
 
 /// Pluck `toolchain.channel` out of a `rust-toolchain.toml`. Accepts the
@@ -294,14 +320,39 @@ version = "0"
 
     #[test]
     fn default_tasks_include_build_check_test_clippy() {
-        let tasks = CargoAdapter.default_tasks(Path::new("."));
+        let tmp = tmp_with(&[("Cargo.toml", ""), ("Cargo.lock", "")]);
+        let tasks = CargoAdapter.default_tasks(tmp.path());
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "check", "test", "lint"]);
         assert_eq!(tasks[0].run, "cargo build --locked");
         assert_eq!(tasks[1].run, "cargo check --locked --all-targets");
         assert_eq!(tasks[2].run, "cargo test --locked");
-        assert!(tasks[3].run.starts_with("cargo clippy"));
+        assert!(tasks[3].run.starts_with("cargo clippy --locked"));
         assert!(tasks[3].run.contains("-D warnings"));
+    }
+
+    #[test]
+    fn default_tasks_drop_locked_without_a_lockfile() {
+        // `bento new cargo` leaves a crate with no Cargo.lock; --locked
+        // there fails before it compiles anything.
+        let tmp = tmp_with(&[("Cargo.toml", ""), ("bento.toml", "")]);
+        let tasks = CargoAdapter.default_tasks(tmp.path());
+        assert_eq!(tasks[0].run, "cargo build");
+        assert_eq!(tasks[1].run, "cargo check --all-targets");
+        assert_eq!(tasks[2].run, "cargo test");
+        assert_eq!(tasks[3].run, "cargo clippy --all-targets -- -D warnings");
+    }
+
+    #[test]
+    fn locked_survives_a_workspace_member_whose_lock_is_at_the_root() {
+        let tmp = tmp_with(&[("Cargo.toml", ""), ("Cargo.lock", ""), ("bento.toml", "")]);
+        let member = tmp.path().join("crates/api");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(member.join("Cargo.toml"), "").unwrap();
+        assert_eq!(
+            CargoAdapter.default_tasks(&member)[0].run,
+            "cargo build --locked"
+        );
     }
 
     #[test]

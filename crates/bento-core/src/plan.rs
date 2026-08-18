@@ -1623,6 +1623,7 @@ dishes = ["apps/api"]"#,
 
         let adapter = bento_adapters::CargoAdapter;
         let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.lock"), "").unwrap();
         let resolved = resolve_tasks(tmp.path(), &dish, Some(&adapter), &[]).unwrap();
         let build = resolved.iter().find(|t| t.name == "build").unwrap();
         assert_eq!(
