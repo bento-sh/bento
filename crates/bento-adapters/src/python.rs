@@ -1,21 +1,23 @@
 //! Python adapter (pip / setuptools).
 //!
-//! - Detects: `pyproject.toml` or `requirements.txt` at the dish root.
+//! - Detects: `requirements.txt` / `setup.py`, or a `pyproject.toml`
+//!   that declares `[project]`, `[build-system]`, or `[tool.poetry]`.
 //! - Fingerprints: `pyproject.toml`, `requirements*.txt`, `setup.cfg`,
 //!   `setup.py`, `.python-version`, `poetry.lock`, `uv.lock`.
 //! - Toolchain pin (priority): `.python-version` > `pyproject.toml`'s
 //!   `project.requires-python` (stringly matched — we don't resolve a
 //!   PEP 440 spec, we just cache-key on the raw string).
-//! - Install: `pip install -e .` when a `pyproject.toml` exists;
-//!   otherwise `pip install -r requirements.txt`.
+//! - Install: `poetry install` when `poetry.lock` is present; otherwise
+//!   into the dish's own `.venv/` — `uv venv` + `uv pip install` when
+//!   `uv` is on PATH, else `python3 -m venv` + `.venv/bin/pip install`.
 //! - Default tasks: `python -m build`, `pytest`, `ruff check .`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion};
 use crate::diagnostic::{DiagnosticHook, DiagnosticParser, DiagnosticRerun, ParserId};
 
 pub struct PythonAdapter;
@@ -38,7 +40,9 @@ impl LanguageAdapter for PythonAdapter {
     }
 
     fn detect(&self, dir: &Path) -> bool {
-        dir.join("pyproject.toml").is_file() || dir.join("requirements.txt").is_file()
+        dir.join("requirements.txt").is_file()
+            || dir.join("setup.py").is_file()
+            || pyproject_declares_python(&dir.join("pyproject.toml"))
     }
 
     fn fingerprint_files(&self) -> Vec<String> {
@@ -99,18 +103,66 @@ impl LanguageAdapter for PythonAdapter {
     }
 
     fn install(&self, ctx: &TaskContext) -> Result<()> {
-        let args: Vec<&str> = if ctx.dish_dir.join("pyproject.toml").is_file() {
-            vec!["install", "-e", "."]
-        } else if ctx.dish_dir.join("requirements.txt").is_file() {
-            vec!["install", "-r", "requirements.txt"]
+        let dir = &ctx.dish_dir;
+        if dir.join("poetry.lock").is_file() {
+            let mut cmd = Command::new("poetry");
+            cmd.arg("install");
+            ctx.apply_env(&mut cmd);
+            return crate::adapter::run_install_cmd(ctx, &mut cmd, "poetry install");
+        }
+
+        let target: Vec<&str> =
+            if dir.join("pyproject.toml").is_file() || dir.join("setup.py").is_file() {
+                vec!["-e", "."]
+            } else if dir.join("requirements.txt").is_file() {
+                vec!["-r", "requirements.txt"]
+            } else {
+                return Ok(());
+            };
+
+        // PEP 668: Debian 12+, Ubuntu 23.04+ and homebrew mark the system
+        // interpreter externally-managed, so `pip install` against it
+        // exits 1 with "externally-managed-environment". Everything goes
+        // into the dish's own `.venv/` instead.
+        let uv = crate::probe::memoised("uv", &["--version"]).is_some();
+        if !dir.join(".venv").is_dir() {
+            let mut cmd = if uv {
+                let mut c = Command::new("uv");
+                c.arg("venv");
+                c
+            } else {
+                let mut c = Command::new(system_python());
+                c.args(["-m", "venv", ".venv"]);
+                c
+            };
+            ctx.apply_env(&mut cmd);
+            crate::adapter::run_install_cmd(ctx, &mut cmd, "creating .venv")?;
+        }
+
+        let mut cmd = if uv {
+            let mut c = Command::new("uv");
+            c.args(["pip", "install"]);
+            c
         } else {
-            // Nothing to install — treat as success.
-            return Ok(());
+            let mut c = Command::new(venv_bin(dir, "pip"));
+            c.arg("install");
+            c
         };
-        let mut cmd = Command::new("pip");
-        cmd.args(&args);
+        cmd.args(&target);
         ctx.apply_env(&mut cmd);
-        crate::adapter::run_install_cmd(ctx, &mut cmd, &format!("pip {}", args.join(" ")))
+        crate::adapter::run_install_cmd(ctx, &mut cmd, &format!("pip install {}", target.join(" ")))
+    }
+
+    fn install_probe(&self, dir: &Path) -> InstallProbe {
+        // ponytail: `.venv/` presence only. Poetry's default is an
+        // out-of-tree venv under ~/.cache, so those dishes re-run
+        // `poetry install` (idempotent, ~1s) once per bento invocation
+        // unless they set `virtualenvs.in-project`.
+        if dir.join(".venv").is_dir() {
+            InstallProbe::Ready
+        } else {
+            InstallProbe::missing(".venv/ absent")
+        }
     }
 
     fn resolved_toolchain_fingerprint(&self) -> Option<String> {
@@ -174,6 +226,36 @@ impl LanguageAdapter for PythonAdapter {
     }
 }
 
+/// A `pyproject.toml` on its own proves nothing: Node and Rust repos
+/// routinely carry one purely to configure ruff / black / mypy. Only
+/// the tables a real Python distribution declares count.
+fn pyproject_declares_python(path: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = raw.parse::<toml::Value>() else {
+        return false;
+    };
+    value.get("project").is_some()
+        || value.get("build-system").is_some()
+        || value.get("tool").and_then(|t| t.get("poetry")).is_some()
+}
+
+/// `python3` where it exists (every Linux / macOS host), `python`
+/// otherwise (Windows, and pyenv shims that only expose the short name).
+fn system_python() -> &'static str {
+    if crate::probe::memoised("python3", &["--version"]).is_some() {
+        "python3"
+    } else {
+        "python"
+    }
+}
+
+fn venv_bin(dir: &Path, exe: &str) -> PathBuf {
+    let bin = if cfg!(windows) { "Scripts" } else { "bin" };
+    dir.join(".venv").join(bin).join(exe)
+}
+
 /// Parse `project.requires-python` out of `pyproject.toml`. Returns the
 /// raw spec (e.g. `">=3.11"`) — we don't resolve; we just cache-key on
 /// the string.
@@ -230,6 +312,45 @@ mod tests {
     fn detect_rejects_non_python() {
         let tmp = tmp_with(&[("package.json", "{}")]);
         assert!(!PythonAdapter.detect(tmp.path()));
+    }
+
+    #[test]
+    fn detect_rejects_pyproject_that_only_configures_a_linter() {
+        // A Node repo carrying pyproject.toml for ruff/black settings is
+        // not a Python dish.
+        let tmp = tmp_with(&[
+            ("package.json", "{}"),
+            ("pyproject.toml", "[tool.ruff]\nline-length = 100\n"),
+        ]);
+        assert!(!PythonAdapter.detect(tmp.path()));
+    }
+
+    #[test]
+    fn detect_accepts_build_system_and_poetry_pyprojects() {
+        for body in [
+            "[build-system]\nrequires = [\"setuptools\"]\n",
+            "[tool.poetry]\nname = \"x\"\n",
+        ] {
+            let tmp = tmp_with(&[("pyproject.toml", body)]);
+            assert!(PythonAdapter.detect(tmp.path()), "should detect: {body}");
+        }
+    }
+
+    #[test]
+    fn detect_accepts_setup_py() {
+        let tmp = tmp_with(&[("setup.py", "from setuptools import setup\nsetup()\n")]);
+        assert!(PythonAdapter.detect(tmp.path()));
+    }
+
+    #[test]
+    fn install_probe_tracks_the_dish_venv() {
+        let tmp = tmp_with(&[("pyproject.toml", "[project]\nname = 'x'\n")]);
+        assert!(matches!(
+            PythonAdapter.install_probe(tmp.path()),
+            InstallProbe::Missing { .. }
+        ));
+        std::fs::create_dir(tmp.path().join(".venv")).unwrap();
+        assert_eq!(PythonAdapter.install_probe(tmp.path()), InstallProbe::Ready);
     }
 
     #[test]
