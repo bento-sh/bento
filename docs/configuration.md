@@ -101,8 +101,8 @@ allowlist = ["erlang", "elixir"]
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `local` | bool | `true` | Use the local content-addressed cache at `~/.bento/cache`. |
-| `gha` | bool \| `"auto"` | `"auto"` | Use the GitHub Actions cache tier (the composite action wraps `~/.bento/cache` with `actions/cache@v4`). `"auto"` activates only when running inside a GHA workflow. |
+| `local` | bool | `true` | Use the local content-addressed cache at `~/.bento/cache`. **Not honoured yet** — the local tier is always on, because a remote push stages the bundle through it. |
+| `gha` | bool \| `"auto"` | `"auto"` | Use the GitHub Actions cache tier. The tier is implemented by the composite action (it wraps `~/.bento/cache` with `actions/cache@v4`), which does not read `bento.toml` — to turn it off, drop the action step. The CLI parses this field but does not act on it. |
 | `remote` | string | unset | Remote cache URL. Two schemes: `s3://<bucket>/<optional/prefix>` (any AWS-signed object store), or `bento://<host>[/<prefix>]` (JWT-auth'd HTTP cache — `bento://cache.bento.build` for the hosted service). See README's "Caching" section. |
 | `remote_region` | string | `"us-east-1"` | AWS region for the bucket. S3 scheme only. |
 | `remote_endpoint` | string | unset | Custom S3-compatible endpoint URL. Required for non-AWS services (Cloudflare R2, MinIO, Backblaze B2); omit for native AWS S3. S3 scheme only. |
@@ -332,7 +332,7 @@ Custom-named tasks (anything outside the adapter's lifecycle set) don't get pull
 | `run` | string | required | Shell command. Runs from the dish dir, with the dish's `[toolchain]` honoured. |
 | `inputs` | `string[]` | adapter default | Glob patterns mixed into the cache key for **this task only**. **Replaces** (does not merge with) the adapter's default `inputs`; the dish-level `inputs` field is not folded in either. Omit to use the adapter's default (usually `**` minus derived dirs). A task's own `outputs`, anything matched by the repo's `.gitignore` / `.ignore` files, and the universal noise dirs (`.git`, `.bento`, `node_modules`, `target`, `dist`, `build`, `.next`) are never hashed as inputs. |
 | `outputs` | `string[]` | none | Glob patterns of artefacts produced by this task, restored on cache hit. A trailing slash means the whole directory (`dist/` ≡ `dist/**`). Changing `outputs` changes the cache key. |
-| `env` | `string[]` | `[]` | Names of env vars whose **values** should mix into the cache key. The names are visible (in `bento why`); the values are hashed only. Under `bento deploy --env <name>` / `--secret-from`, the aliased *source* value is what gets hashed. |
+| `env` | `string[]` | `[]` | Names of env vars whose **values** should mix into the cache key. The names are visible (in `bento why`); the values are hashed only. Under `bento deploy --env <name>` / `--secret-from`, the aliased *source* value is what gets hashed. This is a hash declaration, **not a filter**: a native task inherits bento's whole environment like any shell child. It doubles as the forwarding list only under `[execution] container`, where the runtime isolates the environment and bento passes exactly these names through with `--env`. |
 | `retry` | int | `0` | Additional attempts on failure. `retry = 2` → up to 3 attempts. A task that succeeds on attempt > 1 is reported `flaky: true` in the execution report. |
 | `ci` | bool | `false` | Include a custom-named task in `bento ci` / `bento plan`. Lifecycle names (`build` / `check` / `test` / `lint`) always run; every other name is `bento run`-only unless it opts in — so a `dev` script mirrored from `package.json` never runs in CI. |
 | `cache` | bool | `true` | `false` = always run, never restore from cache (Turborepo's `cache: false`). A custom task on a no-adapter dish with no `inputs` is treated as `cache = false` automatically — a task that hashes nothing would otherwise hit forever. |
@@ -465,7 +465,7 @@ required_cli = ["gh: https://cli.github.com"]
 |-------|------|----------|-------------|
 | `name` | string | yes | Task name in the ExecutionReport. Must be unique within the dish. User-declared `[tasks.<name>]` can override the `run` while keeping Notify semantics intact. |
 | `run` | string | yes | Shell command invoked once per Deploy trigger with the GarnishPayload on stdin. |
-| `env` | `string[]` | no | Env-var allowlist forwarded to the child (same shape as `[tasks.<name>] env`). |
+| `env` | `string[]` | no | Env-var names hashed into the garnish's key, and forwarded with `--env` when containerised (same shape as `[tasks.<name>] env` — not a filter on native runs). |
 | `required_env` | `string[]` | no | Env vars that must be set at runtime — preflight fails the garnish with a clear message otherwise. |
 | `required_cli` | `string[]` | no | CLI binaries that must be on PATH. Entry form: `"binary"` or `"binary: install hint"`. |
 

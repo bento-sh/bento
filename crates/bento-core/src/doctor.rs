@@ -152,6 +152,7 @@ pub fn run_with_options(
     // 3. Integrations — env + CLI preflight per detected integration
     //    so `bento deploy` failures surface here first.
     checks.extend(check_integrations(&workspace, secret_aliases));
+    checks.extend(check_config_keys(&workspace));
 
     // 4. Local cache directory.
     checks.push(check_local_cache());
@@ -296,6 +297,97 @@ fn check_toolchains(workspace: &Workspace) -> Vec<DoctorCheck> {
     checks
 }
 
+/// `[toolchain]` and `[integrations.<id>]` are free-form tables, so a
+/// typo (`nod = "22"`, `[integrations.verecl]`) parses cleanly and then
+/// does nothing at all — no pin installs, no deploy task appears.
+/// Nothing else in the pipeline can flag it: only doctor knows the set
+/// of tools and integration ids this workspace could possibly mean.
+fn check_config_keys(workspace: &Workspace) -> Vec<DoctorCheck> {
+    let registry = AdapterRegistry::builtin();
+    let installer = bento_toolchain::Installer::builtin().ok();
+
+    let mut usable: std::collections::BTreeSet<String> = Default::default();
+    for dish in workspace.dishes_by_path.values() {
+        let Some(adapter) = resolve_adapter(&registry, dish) else {
+            continue;
+        };
+        if let Ok(Some(r)) = Resolver::resolve(&dish.dir, &dish.config, &workspace.repo, adapter) {
+            if let Some(co) = installer.as_ref().and_then(|i| i.tool(&r.tool)) {
+                usable.extend(co.co_required().iter().map(|c| c.tool.to_string()));
+            }
+            usable.insert(r.tool);
+        }
+    }
+
+    let mut pins: std::collections::BTreeMap<&str, &str> = Default::default();
+    for tool in workspace.repo.toolchain.pins.keys() {
+        pins.insert(tool, "bento.toml");
+    }
+    for dish in workspace.dishes_by_path.values() {
+        if let Some(t) = &dish.config.toolchain {
+            for tool in t.pins.keys() {
+                pins.insert(tool, "dish.toml");
+            }
+        }
+    }
+    let unknown_pins: Vec<String> = pins
+        .iter()
+        .filter(|(tool, _)| !usable.contains(**tool))
+        .map(|(tool, file)| format!("{tool} ({file})"))
+        .collect();
+
+    let mut checks = vec![if pins.is_empty() {
+        check_skipped("config.toolchain", "no [toolchain] pins declared")
+    } else if unknown_pins.is_empty() {
+        check_ok("config.toolchain", "every pin maps to a dish's toolchain")
+    } else {
+        check_warn(
+            "config.toolchain",
+            format!(
+                "pinned but unused by any dish — check the spelling (pin keys are runtime \
+                 names: rust, java, node, go, python, bun, deno, ruby, php): {}",
+                unknown_pins.join(", ")
+            ),
+        )
+    }];
+
+    let integrations = IntegrationRegistry::builtin();
+    let declared = workspace
+        .dishes_by_path
+        .values()
+        .any(|dish| !dish.config.integrations.is_empty());
+    let unknown_ids: Vec<String> = workspace
+        .dishes_by_path
+        .values()
+        .flat_map(|dish| {
+            dish.config
+                .integrations
+                .keys()
+                .filter(|id| integrations.by_id(id).is_none())
+                .map(|id| format!("{id} ({})", dish.config.name))
+        })
+        .collect();
+    checks.push(if !declared {
+        check_skipped(
+            "config.integrations",
+            "no [integrations.<id>] blocks declared",
+        )
+    } else if unknown_ids.is_empty() {
+        check_ok("config.integrations", "every [integrations.<id>] is known")
+    } else {
+        check_warn(
+            "config.integrations",
+            format!(
+                "unknown integration id(s), so the block is ignored: {} — known: {}",
+                unknown_ids.join(", "),
+                integrations.ids().join(", ")
+            ),
+        )
+    });
+
+    checks
+}
+
 fn resolve_adapter<'a>(
     registry: &'a AdapterRegistry,
     dish: &LoadedDish,
@@ -327,11 +419,26 @@ fn check_integrations(
     // Bucket: integration id → list of dish names that detected it.
     let mut detections: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for dish in workspace.dishes_by_path.values() {
-        for integration in registry.detect_all(&dish.dir) {
-            detections
-                .entry(integration.id().to_string())
-                .or_default()
-                .push(dish.config.name.clone());
+        // Filesystem detection plus explicit `[integrations.<id>]`
+        // opt-in — the same union the planner resolves tasks from.
+        // Checking detection only meant a Slack / Linear integration
+        // (no platform file to sniff) was never preflighted.
+        let ids = registry
+            .detect_all(&dish.dir)
+            .into_iter()
+            .map(|i| i.id().to_string())
+            .chain(
+                dish.config
+                    .integrations
+                    .keys()
+                    .filter(|id| registry.by_id(id).is_some())
+                    .cloned(),
+            );
+        for id in ids {
+            let entry: &mut Vec<String> = detections.entry(id).or_default();
+            if !entry.contains(&dish.config.name) {
+                entry.push(dish.config.name.clone());
+            }
         }
     }
 
@@ -950,6 +1057,33 @@ dishes = ["dish"]"#,
         std::fs::create_dir(root.join("dish")).unwrap();
         std::fs::write(root.join("dish/dish.toml"), r#"name = "d""#).unwrap();
         tmp
+    }
+
+    #[test]
+    fn doctor_flags_typoed_toolchain_pins_and_integration_ids() {
+        let tmp = workspace_fixture();
+        std::fs::write(tmp.path().join("bento.toml"), "[toolchain]\nnod = \"22\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("dish/dish.toml"),
+            "name = \"d\"\n\n[integrations.verecl]\nproject = \"x\"\n",
+        )
+        .unwrap();
+
+        let report = run(tmp.path()).unwrap();
+        let by_name = |n: &str| {
+            report
+                .checks
+                .iter()
+                .find(|c| c.name == n)
+                .unwrap_or_else(|| panic!("missing check {n}"))
+                .clone()
+        };
+        let pins = by_name("config.toolchain");
+        assert_eq!(pins.status, CheckStatus::Warn, "{}", pins.detail);
+        assert!(pins.detail.contains("nod"), "{}", pins.detail);
+        let ints = by_name("config.integrations");
+        assert_eq!(ints.status, CheckStatus::Warn, "{}", ints.detail);
+        assert!(ints.detail.contains("verecl"), "{}", ints.detail);
     }
 
     #[test]
