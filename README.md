@@ -323,7 +323,9 @@ node = "22.1.0"
 node = "20.10.0"
 ```
 
-Pins that the *adapter* detects from your project files (`.nvmrc`, `.node-version`, `.tool-versions`, `.java-version`, `go.mod`'s `go` directive, `engines.node` in `package.json`, etc.) are folded into the cache key — so a `.nvmrc` bump invalidates — but they do **not** trigger auto-install. That behaviour is deliberate: auto-installing from an adapter-detected file would silently override whatever toolchain the host shell already has, which is usually surprising on a local machine. An explicit `[toolchain]` block is the user opting in.
+Pins that the *adapter* detects from your project files (`.nvmrc`, `.node-version`, `.tool-versions`, `.java-version`, `go.mod`'s `go` directive, `engines.node` in `package.json`, etc.) are folded into the cache key — so a `.nvmrc` bump invalidates — but they do **not** trigger auto-install.
+
+Version files are resolved the way their own tools resolve them: from the dish dir upward, stopping at the repo root. A single `.nvmrc` / `.tool-versions` / `rust-toolchain.toml` / `.python-version` / `.ruby-version` at the top of the monorepo covers every dish under it. nvm's floating aliases (`lts/*`, `node`, `latest`, `stable`) are treated as *no* pin — they name a different version every month, so bento falls through to the next signal rather than keying the cache on a moving target; `lts/<codename>` resolves to its major. That behaviour is deliberate: auto-installing from an adapter-detected file would silently override whatever toolchain the host shell already has, which is usually surprising on a local machine. An explicit `[toolchain]` block is the user opting in.
 
 **Concretely:**
 
