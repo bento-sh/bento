@@ -625,14 +625,14 @@ pub enum McpAction {
 
         /// Bake `--workspace <PATH>` into the registered command so
         /// `bento-mcp` always pins to that workspace. Defaults to none
-        /// (`bento-mcp` resolves cwd at startup). NOTE: this flag is
-        /// independent of bento's global `--workspace` /
-        /// `$BENTO_WORKSPACE_ROOT` — it controls what gets *written
-        /// into the MCP config file*, not where `bento mcp install`
-        /// itself runs. Pass an absolute path you want the MCP server
-        /// to anchor on.
+        /// (`bento-mcp` resolves cwd at startup). Deliberately NOT
+        /// spelled `--workspace`: that clap id belongs to the global
+        /// flag, which also reads `$BENTO_WORKSPACE_ROOT`, and with
+        /// the id shared an exported `BENTO_WORKSPACE_ROOT` silently
+        /// baked itself into every MCP config bento wrote. Pass an
+        /// absolute path you want the MCP server to anchor on.
         #[arg(long, value_name = "PATH")]
-        workspace: Option<std::path::PathBuf>,
+        pin_workspace: Option<std::path::PathBuf>,
 
         /// Override the server-key written into the config (default
         /// `bento` — surfaces as `mcp__bento__<verb>` in client tool

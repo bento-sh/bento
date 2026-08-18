@@ -122,7 +122,7 @@ bento mcp install claude-code    # one client at a time (positional arg)
 bento mcp install codex --local  # project-scoped (Codex trusted-projects flow)
 ```
 
-`bento mcp install --help` lists every supported client and the file it writes. Config files with `//` or `/* */` comments (Zed ships a commented `settings.json`) are read as JSONC; when bento only has to add a top-level key it splices the entry in as text so your comments survive.
+`bento mcp install --help` lists every supported client and the file it writes. Config files with `//` or `/* */` comments (Zed ships a commented `settings.json`) are read as JSONC; when bento only has to add a top-level key it splices the entry in as text so your comments survive. Pass `--pin-workspace <PATH>` to bake `--workspace <PATH>` into the registered command — it is deliberately not spelled `--workspace`, which is bento's own global flag.
 
 ### Claude Desktop
 

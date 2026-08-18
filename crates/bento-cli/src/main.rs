@@ -137,9 +137,9 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Mcp(McpAction::Install {
             client,
             local,
-            workspace,
+            pin_workspace,
             name,
-        }) => return mcp::run(cli.global.json, client, local, workspace, name),
+        }) => return mcp::run(cli.global.json, client, local, pin_workspace, name),
         Command::Toolchain(action) => return toolchain::run(&cli.global, action),
         Command::Release { spec } => return release::run(&spec),
         Command::Login => return login::run(),
