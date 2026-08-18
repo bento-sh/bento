@@ -17,7 +17,10 @@ members = [
 [workspace.package]
 version = "0.1.2"
 edition = "2021"
-rust-version = "1.75"
+# The real floor, verified by ci.yml's `msrv` job: rmcp 1.5 pulls
+# darling 0.23, which declares 1.88.0, and bento-core's `unsafe extern`
+# block needs 1.82. 1.87 fails to resolve.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["Disruptor Labs <hello@disruptorlabs.io>"]
 repository = "https://github.com/bento-sh/bento"

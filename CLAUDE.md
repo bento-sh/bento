@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **bento** is a polyglot monorepo orchestrator — one CLI that wraps every dish's native package manager (npm / pnpm / yarn / bun / cargo / go / composer / pip / bundle / mvn / gradle / deno) behind uniform verbs. Positioned as "built for agents first, first-class for humans."
 
-**Language:** Rust (edition 2021, MSRV 1.75).
+**Language:** Rust (edition 2021, MSRV 1.88 — enforced by ci.yml's `msrv` job; the build toolchain is pinned separately in `rust-toolchain.toml`).
 
 **Distribution:** published binaries via GitHub releases; floating minor tags (`v0.1`) and pinned patches (`v0.1.0`). GitHub Action at the repo root re-exports the CLI so CI users can `uses: bento-sh/bento@v0.1`.
 

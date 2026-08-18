@@ -168,11 +168,7 @@ fn find_state_id(api_key: &str, name: &str, team: Option<&str>) -> Result<String
         .ok_or_else(|| anyhow!("malformed workflowStates response: {resp}"))?;
     let matched: Vec<&serde_json::Value> = nodes
         .iter()
-        .filter(|n| {
-            team.map_or(true, |t| {
-                n.pointer("/team/key").and_then(|k| k.as_str()) == Some(t)
-            })
-        })
+        .filter(|n| team.is_none_or(|t| n.pointer("/team/key").and_then(|k| k.as_str()) == Some(t)))
         .collect();
     match matched.len() {
         0 => Err(anyhow!(
