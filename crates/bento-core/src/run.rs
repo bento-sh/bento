@@ -647,12 +647,23 @@ impl Executor {
                             .collect();
                         handles
                             .into_iter()
-                            .map(|h| h.join().expect("dish worker panicked"))
+                            .zip(chunk)
+                            .map(|(h, loaded)| match h.join() {
+                                Ok(r) => (*loaded, r),
+                                Err(_) => (*loaded, Err(anyhow::anyhow!("dish worker panicked"))),
+                            })
                             .collect()
                     });
 
-                    for result in results {
-                        let (exec_dish, stats) = result?;
+                    for (loaded, result) in results {
+                        // A panic or an I/O error in one dish used to
+                        // abort the process and take the whole report
+                        // with it, including the dishes that already
+                        // ran. It's one failed row like any other.
+                        let (exec_dish, stats) = match result {
+                            Ok(v) => v,
+                            Err(e) => errored_dish(loaded, &e),
+                        };
                         report.summary.dishes += 1;
                         report.summary.tasks += stats.tasks;
                         report.summary.hits += stats.hits;
@@ -676,6 +687,13 @@ impl Executor {
                         if had_failure && fail_fast {
                             stop = true;
                         }
+                    }
+
+                    // Checked per chunk, not per level: with
+                    // `parallelism` below the level's dish count the
+                    // remaining chunks used to run anyway.
+                    if stop {
+                        break;
                     }
                 }
 
@@ -1818,6 +1836,38 @@ impl Executor {
     }
 }
 
+/// Report row for a dish whose worker panicked or whose execution
+/// returned an error. Keeps the rest of the run's report intact.
+fn errored_dish(loaded: &LoadedDish, err: &anyhow::Error) -> (ExecutedDish, DishStats) {
+    (
+        ExecutedDish {
+            name: loaded.config.name.clone(),
+            path: loaded.rel.clone(),
+            language: None,
+            install: None,
+            tasks: vec![ExecutedTask {
+                name: "<dish>".to_string(),
+                run: String::new(),
+                key: String::new(),
+                duration_ms: 0,
+                outcome: TaskOutcome::Failed {
+                    exit_code: -1,
+                    stderr_excerpt: format!("{err:#}"),
+                },
+                attempts: 0,
+                flaky: false,
+                output_excerpt: None,
+                diagnostics: Vec::new(),
+            }],
+        },
+        DishStats {
+            tasks: 1,
+            failed: 1,
+            ..Default::default()
+        },
+    )
+}
+
 /// Per-dish counters produced by `execute_dish` and folded back into
 /// [`ExecutionSummary`] by the outer `execute` loop. Splitting this out
 /// lets us execute dishes in parallel without sharing the summary across
@@ -2170,10 +2220,7 @@ fn build_remote_from(workspace: &Workspace) -> Option<std::sync::Arc<dyn RemoteC
     let url = cache_cfg.remote.as_deref()?;
     let region = cache_cfg.remote_region.as_deref();
     let endpoint = cache_cfg.remote_endpoint.as_deref();
-    let token_env = cache_cfg
-        .remote_token_env
-        .as_deref()
-        .unwrap_or("BENTO_CACHE_TOKEN");
+    let token_env = bento_cache::token::token_env_name(cache_cfg.remote_token_env.as_deref());
     let token = bento_cache::token::resolve_cache_token(token_env);
     match bento_cache::build_remote(url, region, endpoint, token.as_deref()) {
         Ok(r) => Some(std::sync::Arc::from(r)),
@@ -3151,6 +3198,44 @@ dishes = ["a", "b"]"#,
         assert_eq!(report.summary.failed, 1);
         assert_eq!(report.summary.built, 1);
         assert_eq!(report.bentos[0].dishes.len(), 2);
+    }
+
+    #[test]
+    fn fail_fast_stops_remaining_chunks_within_a_level() {
+        // Regression: `stop` was only checked after the whole level's
+        // chunk loop, so with parallelism below the level's dish count
+        // every later chunk still ran.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "bento.toml",
+            b"[defaults]\nfail_fast = true\nparallelism = 1\n",
+        );
+        std::fs::create_dir(root.join("bentos")).unwrap();
+        write(
+            root,
+            "bentos/prod.toml",
+            br#"name = "prod"
+dishes = ["a", "b"]"#,
+        );
+        write(
+            root,
+            "a/dish.toml",
+            b"name = \"a\"\n\n[tasks.build]\nrun = \"exit 1\"\n",
+        );
+        write(
+            root,
+            "b/dish.toml",
+            b"name = \"b\"\n\n[tasks.build]\nrun = \"true\"\n",
+        );
+
+        let (exec, _cache) = executor(root);
+        let report = exec.execute(&CiOptions::default()).unwrap();
+
+        assert_eq!(report.summary.failed, 1);
+        assert_eq!(report.summary.built, 0, "'b' must not have run");
+        assert_eq!(report.bentos[0].dishes.len(), 1);
     }
 
     #[test]

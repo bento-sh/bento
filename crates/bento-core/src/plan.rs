@@ -221,12 +221,23 @@ impl Planner {
                 let planned = self.plan_dish(loaded, opts, clean_dirs.as_ref(), &dep_sigs)?;
                 summary.dishes += 1;
                 for task in &planned.tasks {
-                    summary.tasks += 1;
                     match task.status {
-                        TaskStatus::CacheHit => summary.hits += 1,
-                        TaskStatus::CacheMiss => summary.misses += 1,
+                        TaskStatus::CacheHit => {
+                            summary.tasks += 1;
+                            summary.hits += 1;
+                        }
+                        TaskStatus::CacheMiss => {
+                            summary.tasks += 1;
+                            summary.misses += 1;
+                        }
+                        // `<none>` is a placeholder row for a dish with
+                        // nothing to run, not a task: counting it gave
+                        // "1 task, 0 hits, 0 misses".
                         TaskStatus::NoAdapter => {}
-                        TaskStatus::SkippedDiffClean => summary.skipped += 1,
+                        TaskStatus::SkippedDiffClean => {
+                            summary.tasks += 1;
+                            summary.skipped += 1;
+                        }
                     }
                 }
                 dishes.push(planned);
