@@ -792,8 +792,29 @@ impl Executor {
         let mut computed_task_keys: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
 
+        // Set once a task fails under fail_fast; the rest of the dish's
+        // tasks are then reported as skipped rather than silently
+        // vanishing from the report (an agent reading `tasks[]` must be
+        // able to tell "didn't run" from "not planned").
+        let mut failed_fast: Option<String> = None;
         for task in &resolved {
             if !opts.task_allowed(task) {
+                continue;
+            }
+            if let Some(after) = &failed_fast {
+                exec_tasks.push(ExecutedTask {
+                    name: task.name.clone(),
+                    run: task.run.clone(),
+                    key: String::new(),
+                    duration_ms: 0,
+                    outcome: TaskOutcome::Skipped {
+                        reason: format!("{after} failed (fail_fast)"),
+                    },
+                    attempts: 0,
+                    flaky: false,
+                    output_excerpt: None,
+                    diagnostics: Vec::new(),
+                });
                 continue;
             }
 
@@ -831,7 +852,7 @@ impl Executor {
                     .fail_fast
                     .unwrap_or(self.workspace.repo.defaults.fail_fast)
                 {
-                    break;
+                    failed_fast = Some(task.name.clone());
                 }
                 continue;
             }
@@ -978,7 +999,9 @@ impl Executor {
                 .fail_fast
                 .unwrap_or(self.workspace.repo.defaults.fail_fast)
             {
-                break; // inner fail_fast — caller handles cross-dish stop
+                // Inner fail_fast — remaining tasks get Skipped rows;
+                // the caller handles the cross-dish stop.
+                failed_fast = Some(task.name.clone());
             }
         }
 
