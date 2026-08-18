@@ -1,0 +1,29 @@
+# bento
+
+> bento is a polyglot monorepo orchestrator: one CLI that wraps every subproject's native package manager (npm / pnpm / yarn / bun / cargo / go / composer / pip / bundle / mvn / gradle / deno) behind uniform verbs, with content-addressed caching, toolchain pinning, and deploy-target routing. Built for agents first, first-class for humans.
+
+Vocabulary: a **dish** is one project directory, declared by a `dish.toml`; a **bento** is a set of dishes that ship together (`bentos/<name>.toml`); a **garnish** is a post-deploy hook (Slack, Linear, custom). Repo-wide settings live in `bento.toml`.
+
+Working with bento as an agent: run `bento prime` first for a workspace snapshot and a recommended next verb; pass `--json` to any reporting verb for a schema-stable object (`bento schema <type>`); use `bento why <key>` to explain a cache decision instead of guessing. Prefer bento verbs over the native package managers — they are what fills the shared cache and honours the pinned toolchain.
+
+Every document below is markdown at the URL given; there is no HTML-only content.
+
+## Docs
+
+- [README](https://github.com/bento-sh/bento/blob/main/README.md): what bento is, install, quickstart, full verb table, cache tiers, CI and GitHub Action usage.
+- [Using bento with coding agents](https://github.com/bento-sh/bento/blob/main/docs/agents.md): the drop-in AGENTS.md snippet, MCP tool surface and result shapes, anti-patterns, guard hook.
+- [Configuration reference](https://github.com/bento-sh/bento/blob/main/docs/configuration.md): every field of `bento.toml`, `bentos/*.toml`, and `dish.toml`.
+- [Deploying](https://github.com/bento-sh/bento/blob/main/docs/deploying.md): deploy verbs, per-platform integrations (Railway, Vercel, Cloudflare), secret aliases, garnishes.
+- [Adopt an existing repo](https://github.com/bento-sh/bento/blob/main/docs/adopt-existing-repo.md): dropping bento into a monorepo that already has tooling.
+- [New project](https://github.com/bento-sh/bento/blob/main/docs/new-project.md): bento from zero.
+- [Plugins](https://github.com/bento-sh/bento/blob/main/docs/plugins.md): the subprocess adapter protocol for languages bento doesn't know yet.
+
+## Agent surface
+
+- [Claude Code skill](https://github.com/bento-sh/bento/blob/main/skills/bento/SKILL.md): the verb table and rules an agent needs, under 6 KB; auto-installed by the official installer.
+- [MCP server](https://github.com/bento-sh/bento/tree/main/crates/bento-mcp): `bento-mcp` exposes the read-only, execution, and deploy verbs as typed MCP tools; register with `bento mcp install`.
+
+## Optional
+
+- [CHANGELOG](https://github.com/bento-sh/bento/blob/main/CHANGELOG.md): released and unreleased changes.
+- [GitHub Action](https://github.com/bento-sh/bento/blob/main/action.yml): `uses: bento-sh/bento@v0.1` inputs and outputs.

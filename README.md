@@ -31,14 +31,16 @@ Modern teams ship polyglot monorepos, and half the commits are landed by agents.
 
 ## For agents
 
-Drop [this `CLAUDE.md` / `AGENTS.md` snippet](./docs/agents.md#drop-in-claudemd--agentsmd-snippet) into any bento-managed repo and your coding agent stops rediscovering which package manager each subdir uses — it'll reach for `bento install` / `bento ci` / `bento deploy` and `--json` everywhere. Full rationale + verb table in [docs/agents.md](./docs/agents.md).
+`bento init` writes an [`AGENTS.md` block](./docs/agents.md#drop-in-claudemd--agentsmd-snippet) (plus a `CLAUDE.md` import) into any bento-managed repo, and your coding agent stops rediscovering which package manager each subdir uses — it reaches for `bento install` / `bento ci` / `bento deploy` and `--json` everywhere. Full rationale + verb table in [docs/agents.md](./docs/agents.md).
 
-Then, the primitives the snippet leans on:
+Three ways in, same verbs: the **CLI** (primary — fewest tokens per call), the **`bento-mcp` MCP server** (`bento mcp install`, sixteen annotated tools), and the **Claude Code skill** (under 6 KB, auto-loads in a bento workspace, installed by the official installer).
 
-- **`--json` on every command.** Stable, schemaed, parseable.
+Then, the primitives all three lean on:
+
+- **`--json` on every command.** Stable, schemaed, parseable — pretty in a terminal, compact when piped, so an agent capturing stdout doesn't pay for indentation.
 - **`bento schema <type>`** prints the JSON Schema for every output — `plan`, `report`, `why`, `scaffold`, `doctor`, `manifest`, `error`, `diagnostics`, `garnish-payload`, `prime`. Agents can switch on the shape they actually observe.
 - **`bento why <hash>`** returns the full input manifest behind any cache key: adapter, toolchain, env var names (never values), and every hashed file's individual blake3 digest. Cache surprises become diagnosable rather than mysterious.
-- **Structured errors.** Failures emit `{ kind, message, hint?, where?, docs_url? }` with a stable `kind` taxonomy. No prose-parsing to recover.
+- **Structured errors.** Failures emit `{ kind, message, hint?, next_steps, where?, docs_url? }` with a stable `kind` taxonomy and ordered recovery steps. No prose-parsing to recover. MCP tool failures carry the same envelope as a tool result (`isError`), not a protocol error.
 - **`bento doctor`** runs a non-destructive sweep — config, toolchains, cache tiers, git, remote — and emits one structured status (`ok | warn | fail | skipped`) per check.
 - **`bento dish add <path> --lang <ecosystem>`** scaffolds a compilable starter and wires it into the target bento in one shot, so agents can land green code without toolchain spelunking.
 - **`bento init`** in an existing monorepo walks subdirs, auto-detects every dish bento knows about, and captures toolchain pins from each — no hand-wiring.
@@ -547,13 +549,15 @@ Everything in this README plus deeper detail in `docs/`. Humans browse from here
 | [Walkthrough: starting a new project](./docs/new-project.md) | From `mkdir` to a working polyglot scaffold with one bento and two dishes. |
 | [Configuration reference](./docs/configuration.md) | Every field in `bento.toml` / `bentos/*.toml` / `dish.toml` — including `[environments.<name>]` and `[integrations.<id>]`. |
 | [Deploying with bento](./docs/deploying.md) | `bento deploy`, Railway / Vercel / Cloudflare Pages / Cloudflare Workers integrations, multi-service fan-out, secret aliases, staging/prod split, troubleshooting. |
-| [Using bento with coding agents](./docs/agents.md) | Drop-in `CLAUDE.md` / `AGENTS.md` snippet, verb reference, when-not-to-use guidance. |
+| [Using bento with coding agents](./docs/agents.md) | Drop-in `AGENTS.md` snippet, MCP tool surface, anti-patterns, guard hook. |
 | [Plugin authoring guide](./docs/plugins.md) | Wire protocol walkthrough, Rust + Python reference plugins, trust model. |
 | [README → GitHub Action](#github-action) | Inputs, outputs, toolchain contract, packaging patterns. |
 | [README → Packaging](#packaging-your-build-artefacts) | Hand off built artefacts to Docker / upload-artifact / release steps. |
 | [CHANGELOG](./CHANGELOG.md) | Release-by-release feature log. |
 
 For machine-readable output schemas: `bento schema [target]` (run with no target to list all schemas — `plan`, `report`, `why`, `scaffold`, `doctor`, `manifest`, `error`).
+
+Every page above is plain markdown — GitHub serves the source at the same path (`https://raw.githubusercontent.com/bento-sh/bento/main/docs/<page>.md`), so agents can fetch a doc without stripping HTML. [`llms.txt`](./llms.txt) is the [llmstxt.org](https://llmstxt.org) index of those URLs.
 
 ## Status
 
