@@ -34,14 +34,15 @@ impl fmt::Display for CacheKey {
 /// finalize into a [`CacheKey`].
 ///
 /// Hash format prefixes every addition with a type tag (`file:` / `extra:`)
-/// and a NUL separator so that the same bytes delivered via different calls
-/// never collide.
+/// and length-prefixes every variable-length field, so the same bytes
+/// delivered via different calls never collide. [`Hasher::FORMAT_TAG`]
+/// opens the stream; bumping it invalidates every existing key.
 pub struct Hasher {
     inner: blake3::Hasher,
 }
 
 impl Hasher {
-    const FORMAT_TAG: &'static [u8] = b"bento-cas-v2\0";
+    const FORMAT_TAG: &'static [u8] = b"bento-cas-v3\0";
 
     pub fn new() -> Self {
         let mut inner = blake3::Hasher::new();
@@ -69,12 +70,17 @@ impl Hasher {
     }
 
     /// Mix in a key=value extra (task command, toolchain version, env var).
+    ///
+    /// Both halves are length-prefixed rather than joined by `=`: a value
+    /// containing `=` or NUL could otherwise be split at a different
+    /// point than it was joined, so `("a=b", "c")` and `("a", "b=c")`
+    /// hashed identically.
     pub fn add_extra(&mut self, key: &str, value: &str) {
         self.inner.update(b"extra:");
+        self.inner.update(&(key.len() as u64).to_le_bytes());
         self.inner.update(key.as_bytes());
-        self.inner.update(b"=");
+        self.inner.update(&(value.len() as u64).to_le_bytes());
         self.inner.update(value.as_bytes());
-        self.inner.update(b"\0");
     }
 
     pub fn finalize(self) -> CacheKey {
@@ -144,6 +150,25 @@ mod tests {
         b.add_file(Path::new("x"), b"helloworld");
         b.add_extra("k", "");
 
+        assert_ne!(a.finalize(), b.finalize());
+    }
+
+    #[test]
+    fn extras_cant_smuggle_the_separator() {
+        // Joined by `=` these were the same byte stream.
+        let mut a = Hasher::new();
+        a.add_extra("a=b", "c");
+        let mut b = Hasher::new();
+        b.add_extra("a", "b=c");
+        assert_ne!(a.finalize(), b.finalize());
+
+        // Same for the trailing NUL: an empty extra after a value ending
+        // in NUL must not equal one long value.
+        let mut a = Hasher::new();
+        a.add_extra("k", "v\0w");
+        let mut b = Hasher::new();
+        b.add_extra("k", "v");
+        b.add_extra("", "w");
         assert_ne!(a.finalize(), b.finalize());
     }
 
