@@ -5,7 +5,7 @@
 //!   `<root>/bento*.tmp`         — in-flight write (renamed atomically)
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -264,6 +264,11 @@ pub(crate) fn persist_temp(tmp: tempfile::NamedTempFile, final_path: &Path) -> R
 
 /// Land a bundle downloaded from a remote tier at `dest`. Shared by both
 /// remote backends so neither can invent its own promotion rules.
+///
+/// The download is validated at its temp path and only then renamed into
+/// place: a truncated or wrong-version body must never occupy `<key>.tar`,
+/// because the local tier trusts that path unconditionally and would serve
+/// the corruption to every later run.
 pub(crate) fn promote_remote_bundle(dest: &Path, data: &[u8]) -> Result<()> {
     let dir = dest.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)
@@ -272,7 +277,74 @@ pub(crate) fn promote_remote_bundle(dest: &Path, data: &[u8]) -> Result<()> {
     tmp.as_file_mut()
         .write_all(data)
         .with_context(|| format!("writing remote bundle to {}", tmp.path().display()))?;
+    validate_bundle(tmp.path()).context("remote bundle failed validation — not promoted")?;
     persist_temp(tmp, dest)
+}
+
+/// Bytes of a minimal, valid bundle — the remote backends' tests need a
+/// body that survives [`validate_bundle`], and only this module knows the
+/// format.
+#[cfg(test)]
+pub(crate) fn sample_bundle_bytes() -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = LocalCache::new(dir.path());
+    let key = CacheKey::from_hex("5a3b1e");
+    cache
+        .put(&key, dir.path(), &[], None, &[], &TaskResult::default())
+        .unwrap();
+    std::fs::read(cache.bundle_path(&key)).unwrap()
+}
+
+/// Read a bundle end to end without extracting anything: it must be
+/// terminated, every entry header and body must be present, and
+/// `meta.json` must parse at the version we speak.
+fn validate_bundle(path: &Path) -> Result<()> {
+    let mut file = File::open(path)?;
+    // A body cut at a 512-byte boundary reads as a *clean* end-of-archive
+    // to the entry walk below, so check for the trailer first —
+    // `tar::Builder::finish` always writes those two zero blocks.
+    let len = file.metadata()?.len();
+    if len < 1024 || len % 512 != 0 {
+        anyhow::bail!("bundle is {len} bytes, not a whole number of tar blocks");
+    }
+    let mut trailer = [0u8; 1024];
+    file.seek(SeekFrom::End(-1024))?;
+    file.read_exact(&mut trailer)?;
+    if trailer.iter().any(|b| *b != 0) {
+        anyhow::bail!("bundle has no end-of-archive marker — truncated in transit");
+    }
+    file.rewind()?;
+
+    let mut archive = tar::Archive::new(file);
+    let mut meta_bytes = None;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.as_ref() == Path::new("meta.json") {
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf)?;
+            meta_bytes = Some(buf);
+        } else {
+            // Drain the body so a body truncated mid-entry errors here
+            // rather than at restore time.
+            std::io::copy(&mut entry, &mut std::io::sink())?;
+        }
+    }
+    check_meta(meta_bytes.as_deref()).map(|_| ())
+}
+
+/// Parse + version-check a bundle's `meta.json`. `None` means the archive
+/// held no such entry.
+fn check_meta(bytes: Option<&[u8]>) -> Result<Metadata> {
+    let bytes = bytes.ok_or_else(|| anyhow::anyhow!("cache bundle missing meta.json"))?;
+    let meta: Metadata = serde_json::from_slice(bytes).context("parsing cache bundle meta.json")?;
+    if meta.version != BUNDLE_VERSION {
+        anyhow::bail!(
+            "cache bundle version {} does not match expected {}",
+            meta.version,
+            BUNDLE_VERSION
+        );
+    }
+    Ok(meta)
 }
 
 fn is_bundle(path: &Path) -> bool {
@@ -372,7 +444,7 @@ fn extract_bundle(
     let mut tar = tar::Archive::new(file);
 
     let mut result = TaskResult::default();
-    let mut meta_bytes: Option<Vec<u8>> = None;
+    let mut meta: Option<Metadata> = None;
 
     for entry in tar.entries()? {
         let mut entry = entry?;
@@ -382,7 +454,10 @@ fn extract_bundle(
         if name == "meta.json" {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
-            meta_bytes = Some(buf);
+            // Checked here, not after the loop: `write_bundle` puts
+            // meta.json first, so a version we don't speak aborts before
+            // any of its `outputs/` land in the dish.
+            meta = Some(check_meta(Some(&buf))?);
         } else if name == "stdout" {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
@@ -404,21 +479,8 @@ fn extract_bundle(
         }
     }
 
-    if let Some(bytes) = meta_bytes {
-        let meta: Metadata =
-            serde_json::from_slice(&bytes).context("parsing cache bundle meta.json")?;
-        if meta.version != BUNDLE_VERSION {
-            anyhow::bail!(
-                "cache bundle version {} does not match expected {}",
-                meta.version,
-                BUNDLE_VERSION
-            );
-        }
-        result.exit_code = meta.exit_code;
-    } else {
-        anyhow::bail!("cache bundle missing meta.json");
-    }
-
+    let meta = meta.ok_or_else(|| anyhow::anyhow!("cache bundle missing meta.json"))?;
+    result.exit_code = meta.exit_code;
     Ok(result)
 }
 
@@ -957,17 +1019,17 @@ mod tests {
     }
 
     #[test]
-    fn get_errors_on_bundle_version_mismatch() {
+    fn get_errors_on_bundle_version_mismatch_without_extracting() {
         let cache = tempfile::tempdir().unwrap();
         let local = LocalCache::new(cache.path());
-        let dish = tempfile::tempdir().unwrap();
+        let dish = make_dish(&[("dist/app.js", b"built")]);
         let key = make_key("bump");
 
         local
             .put(
                 &key,
                 dish.path(),
-                &[],
+                &["dist/**".into()],
                 None,
                 &[],
                 &TaskResult {
@@ -1006,6 +1068,14 @@ mod tests {
 
         let restore = tempfile::tempdir().unwrap();
         let err = local.get(&key, restore.path(), None).unwrap_err();
-        assert!(err.to_string().contains("bundle"), "got: {err}");
+        assert!(
+            format!("{err:#}").contains("does not match expected"),
+            "got: {err:#}"
+        );
+        // meta.json is the first entry, so nothing should have landed.
+        assert!(
+            !restore.path().join("dist").exists(),
+            "extracted outputs from a bundle we can't read"
+        );
     }
 }

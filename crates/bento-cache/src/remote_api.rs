@@ -18,8 +18,9 @@
 //!
 //! - `has` returns `false` on any non-200 response or transport error.
 //! - `get` returns `Ok(false)` on 404 / transport failure / body-read
-//!   failure; it only returns `Err` for local I/O problems writing the
-//!   downloaded bundle to disk.
+//!   failure; it returns `Err` for local I/O problems writing the
+//!   downloaded bundle to disk, and for a body that fails validation
+//!   (the download is discarded, never promoted to `<key>.tar`).
 //! - `put` returns `Err` on upstream failure so the executor can log +
 //!   swallow (the local cache is still authoritative).
 
@@ -44,7 +45,8 @@ pub trait RemoteCache: Send + Sync {
 
     /// Download the bundle for `key` to `dest`. Returns `Ok(true)` on a
     /// successful write, `Ok(false)` on miss / transport failure / body
-    /// error. Only `Err` for a local-filesystem write problem.
+    /// error, `Err` for a local-filesystem write problem or a body that
+    /// doesn't validate as a bundle.
     fn get(&self, key: &CacheKey, dest: &Path) -> Result<bool>;
 
     /// Upload `bundle_path` as the bundle for `key`. Errors bubble up so

@@ -24,7 +24,8 @@
 //!
 //! - `has` → `false` on any non-200 / error (best-effort).
 //! - `get` → `Ok(false)` on miss / transport / body-read failure;
-//!   only `Err` for local write problems.
+//!   `Err` for local write problems and for a body that fails
+//!   validation (discarded, never promoted).
 //! - `put` → `Err` propagates; executor logs + keeps the local bundle.
 //!
 //! # Retries

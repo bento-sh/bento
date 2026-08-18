@@ -19,7 +19,9 @@
 //!
 //! Remote cache is strictly best-effort:
 //! - A remote miss or transport error never fails the build; we fall
-//!   back to the local cache / fresh execution.
+//!   back to the local cache / fresh execution. A body that arrives
+//!   corrupt is discarded rather than promoted, and reported as an
+//!   error the caller logs.
 //! - A remote put failure is logged and swallowed; the local cache is
 //!   still authoritative.
 
@@ -230,14 +232,32 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let bundle = tmp.path().join("bundle.tar");
-        std::fs::write(&bundle, b"fake tar data").unwrap();
+        std::fs::write(&bundle, crate::local::sample_bundle_bytes()).unwrap();
         remote.put(&key, &bundle).unwrap();
 
         assert!(remote.has(&key));
 
         let dest = tmp.path().join("got.tar");
         assert!(remote.get(&key, &dest).unwrap());
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "fake tar data");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            crate::local::sample_bundle_bytes()
+        );
+    }
+
+    #[test]
+    fn get_refuses_to_promote_a_corrupt_bundle() {
+        let remote = make_test_remote("", "s3://test");
+        let key = CacheKey::from_hex("ccdd".repeat(16));
+        let tmp = tempfile::tempdir().unwrap();
+
+        let bundle = tmp.path().join("bundle.tar");
+        std::fs::write(&bundle, b"not a tar archive at all").unwrap();
+        remote.put(&key, &bundle).unwrap();
+
+        let dest = tmp.path().join("got.tar");
+        assert!(remote.get(&key, &dest).is_err());
+        assert!(!dest.exists(), "corrupt bundle was promoted anyway");
     }
 
     #[test]

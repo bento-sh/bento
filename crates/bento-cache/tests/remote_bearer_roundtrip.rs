@@ -7,13 +7,24 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use bento_cache::{BearerRemote, CacheKey, RemoteCache};
+use bento_cache::{BearerRemote, CacheKey, LocalCache, RemoteCache, TaskResult};
 use wiremock::matchers::{bearer_token, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TOKEN: &str = "test.jwt.token";
 const HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-const BODY: &[u8] = b"fake-tar-bundle-contents";
+/// A real, well-formed v1 bundle. GET bodies have to survive the
+/// validation pass before they're promoted to `<key>.tar`, so a
+/// placeholder byte string won't do here.
+fn bundle_bytes() -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = LocalCache::new(dir.path());
+    let key = CacheKey::from_hex(HEX);
+    cache
+        .put(&key, dir.path(), &[], None, &[], &TaskResult::default())
+        .unwrap();
+    std::fs::read(cache.bundle_path(&key)).unwrap()
+}
 
 /// wiremock's `MockServer::start()` requires a tokio runtime; spin up a
 /// dedicated multi-thread one so the BearerRemote's own single-thread
@@ -84,7 +95,7 @@ fn get_writes_body_on_200() {
         Mock::given(method("GET"))
             .and(path(format!("/cache/{HEX}")))
             .and(bearer_token(TOKEN))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(BODY))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bundle_bytes()))
             .mount(&server),
     );
 
@@ -94,7 +105,39 @@ fn get_writes_body_on_200() {
     let dest = tmp.path().join("bundle.tar");
 
     assert!(remote.get(&key, &dest).unwrap());
-    assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+    assert_eq!(std::fs::read(&dest).unwrap(), bundle_bytes());
+}
+
+#[test]
+fn get_does_not_promote_a_truncated_bundle() {
+    // A body cut off mid-entry (proxy hiccup, half-written object) must
+    // not land at <key>.tar — the local tier trusts that path forever.
+    let full = bundle_bytes();
+    let torn = full[..full.len() / 2].to_vec();
+    let (server, rt) = spawn_server();
+    rt.block_on(
+        Mock::given(method("GET"))
+            .and(path(format!("/cache/{HEX}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(torn))
+            .mount(&server),
+    );
+
+    let remote = make_remote(&server.uri());
+    let key = CacheKey::from_hex(HEX);
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("bundle.tar");
+
+    let err = remote.get(&key, &dest).unwrap_err();
+    assert!(format!("{err:#}").contains("validation"), "got: {err:#}");
+    assert!(!dest.exists(), "torn bundle was promoted anyway");
+    let strays: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "left the rejected download behind: {strays:?}"
+    );
 }
 
 #[test]
@@ -131,7 +174,7 @@ fn put_succeeds_on_2xx() {
     let key = CacheKey::from_hex(HEX);
     let tmp = tempfile::tempdir().unwrap();
     let bundle = tmp.path().join("bundle.tar");
-    std::fs::write(&bundle, BODY).unwrap();
+    std::fs::write(&bundle, bundle_bytes()).unwrap();
 
     remote.put(&key, &bundle).unwrap();
 }
@@ -150,7 +193,7 @@ fn put_surfaces_over_quota_413() {
     let key = CacheKey::from_hex(HEX);
     let tmp = tempfile::tempdir().unwrap();
     let bundle = tmp.path().join("bundle.tar");
-    std::fs::write(&bundle, BODY).unwrap();
+    std::fs::write(&bundle, bundle_bytes()).unwrap();
 
     let err = remote.put(&key, &bundle).unwrap_err();
     assert!(err.to_string().contains("413"), "got: {err}");
@@ -161,6 +204,7 @@ fn put_surfaces_over_quota_413() {
 /// Confirms the single-retry path fires on a transient 5xx.
 struct RetryOnce {
     count: Arc<AtomicU32>,
+    body: Vec<u8>,
 }
 
 impl Respond for RetryOnce {
@@ -169,7 +213,7 @@ impl Respond for RetryOnce {
         if n == 0 {
             ResponseTemplate::new(503)
         } else {
-            ResponseTemplate::new(200).set_body_bytes(BODY)
+            ResponseTemplate::new(200).set_body_bytes(self.body.clone())
         }
     }
 }
@@ -183,6 +227,7 @@ fn get_retries_once_on_5xx() {
             .and(path(format!("/cache/{HEX}")))
             .respond_with(RetryOnce {
                 count: count.clone(),
+                body: bundle_bytes(),
             })
             .mount(&server),
     );
@@ -194,7 +239,7 @@ fn get_retries_once_on_5xx() {
 
     assert!(remote.get(&key, &dest).unwrap());
     assert_eq!(count.load(Ordering::SeqCst), 2, "expected one retry");
-    assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+    assert_eq!(std::fs::read(&dest).unwrap(), bundle_bytes());
 }
 
 #[test]
