@@ -1,0 +1,8 @@
+# cross 0.2.5 is the last crates.io release and its per-target images are
+# three years old. The aarch64-musl one ships a glibc so old that build
+# scripts compiled by a current rustc won't run inside it ("version
+# `GLIBC_2.28' not found"), which breaks the release build outright. Point
+# that one target at the maintained image, pinned by digest — a floating
+# `:main` tag would hand image control to whoever pushes next.
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl@sha256:f604e399cbb2154ddeb013db99eb4f123d24f09a579c7e8d6ed631d15ffa8b12"
