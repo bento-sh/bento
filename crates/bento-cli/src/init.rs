@@ -484,48 +484,37 @@ pub fn merge_agent_file(path: &Path, header: &str, snippet: &str) -> Result<Agen
     Ok(AgentFileAction::Appended)
 }
 
-const AGENTS_MD_SNIPPET: &str = r#"> **This repo is managed by [bento](https://bento.build) — a polyglot monorepo orchestrator. Always prefer `bento` verbs over native package managers (`npm`, `pnpm`, `cargo`, `go`, `pip`, `composer`, …). Bento routes each dish to the right tool, content-hashes results into a shared cache, and pins toolchains. Start every fresh session with `bento prime`.**
+const AGENTS_MD_SNIPPET: &str = r#"> **This repo is managed by [bento](https://bento.build)** — a polyglot monorepo orchestrator. Always prefer `bento` verbs over native package managers (`npm`, `pnpm`, `cargo`, `go`, `pip`, `composer`, …): bento scopes each dish, content-hashes results into a shared cache, and pins toolchains. Start every fresh session with `bento prime`.
 
-## Verb reference
+## Verbs
 
-| Task                                                      | Command                                                |
+| What you want | Run |
 |---|---|
-| Orient yourself in a fresh session                        | `bento prime`                                          |
-| Install every dish's deps                                 | `bento install`                                        |
-| Single dish only                                          | `bento install <dish>`                                 |
-| Full CI pass (build + check + test + lint)                | `bento ci`                                             |
-| Build / fast type-check / test / lint one target          | `bento <build\|check\|test\|lint> [bento-or-dish]`     |
-| Add a dependency to a dish                                | `bento add <pkg>... --dish <d> [--dev]`                |
-| Run an ad-hoc `[tasks.<name>]` block                      | `bento run <dish> <task> -- <args>`                    |
-| Deploy to an environment                                  | `bento deploy --env <env>`                             |
-| Re-send Slack / Linear notifications without re-deploying | `bento notify --env <env> [target]`                    |
-| Explain a cache decision                                  | `bento why <cache-key-prefix>`                         |
-| Health check (config + toolchains + integrations)         | `bento doctor`                                         |
-| Show what would run without running it                    | `bento plan`                                           |
-| Show resolved artifact paths per dish                     | `bento artifacts --json`                               |
+| Orient in a fresh session | `bento prime` |
+| Install deps | `bento install [target]` |
+| Full CI pass (build + check + test + lint) | `bento ci [target]` |
+| Build, fast type-check, test, lint | `bento build [target]` · `bento check [target]` · `bento test [target]` · `bento lint [target]` |
+| Add a dependency to a dish | `bento add <pkg>… --dish <d> [--dev]` |
+| Invoke a `[tasks.<name>]` block ad-hoc | `bento run <dish> <task> -- <args…>` |
+| Run a service with hot reload | `bento dev <dish>` · `bento serve <bento>` |
+| Deploy; re-fire Slack/Linear hooks | `bento deploy --env <env> [target]` · `bento notify --env <env>` |
+| What would run, and why it cached | `bento plan` · `bento why <key-or-dish:task>` |
+| Inventory | `bento dish list` · `bento box list` · `bento artifacts --json` |
+| Health check (add `--env <env>` before a deploy) | `bento doctor` |
 
-## Hot tips
+`target` is a bento or dish name; omit it to act on everything.
 
-- **`bento prime` first.** Workspace inventory, cache state, plan preview, recommended next verb. Schema-stable JSON via `bento prime --json`.
-- **Pass `--json` when reasoning about output.** Every reporting command emits structured JSON; `bento schema <target>` for the shape.
-- **Don't parse stderr to decide what went wrong.** `bento ci --json` returns `executedTask.outcome` (tagged union — `kind: "failed"` carries `exit_code` and `stderr_excerpt`), plus structured `diagnostics[]` for compiler / linter errors.
-- **Cache surprises are explicable.** `bento why <hash>` returns the full input manifest behind any cache key — adapter, toolchain, env-var names, every hashed file's blake3 digest.
-- **Before `bento deploy`, run `bento doctor --env <env>`** — preflight fails fast with structured check names (`integration.railway.env`, …) so the right knob is named.
-- **Never pass secret values on the CLI.** Use `[environments.<name>]` profiles in `bento.toml` for saved aliases, or `--secret-from DECLARED=SOURCE` for ad-hoc.
+## Rules
 
-## When NOT to use bento
+1. **Prefer bento verbs.** A native `npm ci` / `cargo build` / `pytest` fills that tool's own cache but not bento's, and runs whatever is first on `$PATH` instead of the pinned toolchain — the next `bento ci` then rebuilds from scratch.
+2. **Read `--json`, don't parse stderr.** Every reporting verb has a published shape (`bento schema <target>`); a failed task carries `outcome.kind = "failed"` with `exit_code`, `stderr_excerpt`, and structured `diagnostics[]`.
+3. **Cache surprise → `bento why <key>`**, never guesswork. It returns the full input manifest behind any cache key.
+4. **Never pass secret values on the CLI.** Use `[environments.<env>]` profiles in `bento.toml`, or `--secret-from DECLARED=SOURCE` for ad-hoc name-to-name aliasing. `bento secret put <dish> NAME` reads the value from stdin.
+5. **Start services yourself.** `bento dev <dish> > /tmp/bento-dev.log 2>&1 &`, poll the health endpoint, read the log you own, kill it when done — don't probe the user's processes with `ss` / `lsof` / `pgrep` / `curl localhost:<port>`.
 
-- Filesystem exploration (`ls`, `cat`, `grep`).
-- One-off debugging (`psql`, `curl`, `dig`).
-- Git — bento doesn't wrap git.
+Not bento's job: file exploration, git, one-off `psql` / `curl` / `dig`. Rule of thumb: could this step live in CI? → bento.
 
-If a verb you need isn't listed above, ask before reaching for the native tool. The catalogue is `bento --help`.
-
-## More
-
-- **MCP server**: `bento-mcp` exposes every verb as a typed Model Context Protocol tool. Wire it into Claude Desktop / Claude Code / Cursor / Windsurf via `bento mcp install`.
-- **Schemas**: `bento schema [plan|report|why|scaffold|doctor|manifest|error|diagnostics|garnish-payload|prime]`.
-- **Skill bundle**: `~/.claude/skills/bento/` (installed by the bento installer) ships a PreToolUse hook that blocks native package managers with a hint.
+**MCP server**: `bento mcp install` registers `bento-mcp` with every detected agent client, exposing the read-only and execution verbs as `mcp__bento__*` tools.
 "#;
 
 const CLAUDE_MD_SNIPPET: &str = "@AGENTS.md\n";
@@ -708,6 +697,18 @@ mod tests {
         assert!(
             !body.starts_with("# AGENTS.md"),
             "snippet should not include the file header"
+        );
+    }
+
+    /// One source of truth: the fenced block in `docs/agents.md` is the
+    /// text `bento init` writes. Copy it across when editing either.
+    #[test]
+    fn docs_agents_md_embeds_the_same_snippet() {
+        // cwd for unit tests is the crate root.
+        let docs = std::fs::read_to_string("../../docs/agents.md").expect("read docs/agents.md");
+        assert!(
+            docs.contains(render_agents_snippet().trim_end()),
+            "docs/agents.md must embed AGENTS_MD_SNIPPET verbatim"
         );
     }
 
