@@ -81,7 +81,7 @@ Easiest path: `bento mcp install`. With no arguments it auto-detects every insta
 | Cut a release (bump workspace version, refresh lockfile, commit, tag) | `bento release <patch|minor|major|X.Y.Z>` |
 | Sign in to bento.build + stash the cache JWT in OS keychain (or `~/.bento/credentials` 0600 fallback) | `bento login` |
 
-Global flags worth knowing: `--json`, `--no-cache`, `--bento <name>`, `--since <ref>`, `--report-file <path>`, `--skip-install`, `--force-install`, `-v` / `--verbose`.
+Global flags worth knowing: `--json`, `--no-cache`, `--bento <name>`, `--report-file <path>`, `--skip-install`, `--force-install`, `-v` / `--verbose`.
 
 ## Agent-friendly output
 

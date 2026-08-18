@@ -77,7 +77,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Box(BoxAction::Add { name }) => return run_box_add(&cli.global, name),
         Command::Box(BoxAction::List) => return run_box_list(&cli.global),
         Command::Prime => return prime::run(&cli.global),
-        Command::Plan { target } => run_plan(&cli.global, target)?,
+        Command::Plan { target, since } => run_plan(&cli.global, target, since)?,
         Command::Ci => return run_ci(&cli.global),
         Command::Install { target, force } => return run_install(&cli.global, target, force),
         Command::Build { target } => return run_task_command(&cli.global, "build", target),
@@ -187,7 +187,11 @@ pub(crate) fn resolve_workspace_root(global: &GlobalFlags) -> anyhow::Result<std
     bento_core::find_workspace_root(&start)
 }
 
-fn run_plan(global: &GlobalFlags, target: Option<String>) -> anyhow::Result<()> {
+fn run_plan(
+    global: &GlobalFlags,
+    target: Option<String>,
+    since: Option<String>,
+) -> anyhow::Result<()> {
     let root = resolve_workspace_root(global)?;
 
     // Start from any --bento given via the global flag …
@@ -210,7 +214,7 @@ fn run_plan(global: &GlobalFlags, target: Option<String>) -> anyhow::Result<()> 
         bento_filter,
         dish_filter,
         no_cache: global.no_cache,
-        since: global.since.clone(),
+        since,
         ..Default::default()
     };
     let plan = plan_at(&root, &opts)?;
@@ -2174,7 +2178,6 @@ mod workspace_root_tests {
             json: false,
             no_cache: false,
             bento: None,
-            since: None,
             verbose: false,
             report_file: None,
             skip_install: false,

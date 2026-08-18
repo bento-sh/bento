@@ -37,10 +37,6 @@ pub struct GlobalFlags {
     #[arg(long, value_name = "NAME", global = true)]
     pub bento: Option<String>,
 
-    /// Base ref for change detection (default: origin/main)
-    #[arg(long, value_name = "REF", global = true)]
-    pub since: Option<String>,
-
     /// Enable verbose (debug) tracing
     #[arg(short, long, global = true)]
     pub verbose: bool,
@@ -115,6 +111,11 @@ pub enum Command {
         /// Bento or dish name (omit for every bento in the workspace).
         /// Same target shape as `build` / `test` / `lint` / `deploy`.
         target: Option<String>,
+        /// Git base ref: dishes with no changed files since REF are
+        /// marked skipped in the plan. Preview only — `bento ci` relies
+        /// on the content-hash cache instead.
+        #[arg(long, value_name = "REF")]
+        since: Option<String>,
     },
 
     /// Plan and execute — the GitHub Action entry point
@@ -1012,7 +1013,7 @@ mod tests {
     #[test]
     fn parses_plan() {
         let cli = Cli::try_parse_from(["bento", "plan"]).unwrap();
-        assert!(matches!(cli.command, Command::Plan { target: None }));
+        assert!(matches!(cli.command, Command::Plan { target: None, .. }));
     }
 
     #[test]
@@ -1312,9 +1313,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_global_since_override() {
+    fn parses_plan_since() {
         let cli = Cli::try_parse_from(["bento", "plan", "--since", "HEAD~5"]).unwrap();
-        assert_eq!(cli.global.since.as_deref(), Some("HEAD~5"));
+        assert!(matches!(cli.command, Command::Plan { since: Some(ref s), .. } if s == "HEAD~5"));
     }
 
     #[test]

@@ -298,6 +298,19 @@ fn format_known_bentos(ws: &Workspace) -> String {
 }
 
 fn derive_dish_name(rel: &Path, workspace_root: &Path) -> Result<String> {
+    // A dish lives inside the workspace: refuse absolute paths and any
+    // `..` component before we write files or register the ref.
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(ScaffoldError::InvalidDishPath {
+            path: rel.display().to_string(),
+            reason: "dish path must be relative to the workspace root and not escape it".into(),
+        }
+        .into());
+    }
     // `.` / empty → use the workspace root's basename so `bento dish add .`
     // in a single-repo project names the dish after the repo dir.
     let rel_os = rel.as_os_str();
@@ -1265,6 +1278,18 @@ mod tests {
 
     fn load(root: &Path) -> Workspace {
         Workspace::load(root).unwrap()
+    }
+
+    #[test]
+    fn derive_dish_name_rejects_escaping_paths() {
+        let root = Path::new("/ws");
+        for bad in ["../x", "a/../../x", "/abs/x"] {
+            assert!(derive_dish_name(Path::new(bad), root).is_err(), "{bad}");
+        }
+        assert_eq!(
+            derive_dish_name(Path::new("apps/api"), root).unwrap(),
+            "api"
+        );
     }
 
     #[test]
