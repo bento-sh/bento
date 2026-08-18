@@ -12,9 +12,15 @@ use anyhow::Result;
 use bento_config::Workspace;
 use clap::Parser;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{CallToolResult, Content, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    CallToolResult, Content, ProgressNotificationParam, ProtocolVersion, ServerCapabilities,
+    ServerInfo,
+};
+use rmcp::service::RequestContext;
 use rmcp::transport::stdio;
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
+use rmcp::{
+    tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
+};
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
@@ -358,6 +364,7 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             InstallArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         Ok(report_result(
             async {
@@ -380,7 +387,7 @@ impl BentoServer {
                     environment: None,
                     force_deploy: false,
                 };
-                run_blocking(&root, &opts).await
+                run_blocking(&root, &opts, ctx).await
             }
             .await,
         ))
@@ -404,8 +411,9 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             ExecArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.run_task_tool(input, "build").await
+        self.run_task_tool(input, "build", ctx).await
     }
 
     #[tool(
@@ -427,8 +435,9 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             ExecArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.run_task_tool(input, "check").await
+        self.run_task_tool(input, "check", ctx).await
     }
 
     #[tool(
@@ -447,8 +456,9 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             ExecArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.run_task_tool(input, "test").await
+        self.run_task_tool(input, "test", ctx).await
     }
 
     #[tool(
@@ -467,8 +477,9 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             ExecArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.run_task_tool(input, "lint").await
+        self.run_task_tool(input, "lint", ctx).await
     }
 
     #[tool(
@@ -489,6 +500,7 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             ExecArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         Ok(report_result(
             async {
@@ -511,7 +523,7 @@ impl BentoServer {
                     environment: None,
                     force_deploy: false,
                 };
-                run_blocking(&root, &opts).await
+                run_blocking(&root, &opts, ctx).await
             }
             .await,
         ))
@@ -543,8 +555,9 @@ impl BentoServer {
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
             DeployArgs,
         >,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(report_result(self.deploy_inner(input).await))
+        Ok(report_result(self.deploy_inner(input, ctx).await))
     }
 
     #[tool(
@@ -719,17 +732,63 @@ struct ExecArgs {
 async fn run_blocking(
     root: &std::path::Path,
     opts: &bento_core::CiOptions,
+    ctx: RequestContext<RoleServer>,
 ) -> Result<bento_core::ExecutionReport> {
+    let root = root.to_path_buf();
+    let opts = opts.clone();
+    let ct = ctx.ct.clone();
+
+    // Progress is only legal when the client asked for it with a
+    // progressToken. The executor calls the observer from its own
+    // thread, so hand dishes to the async side over a channel.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    match ctx.meta.get_progress_token() {
+        Some(token) => {
+            let peer = ctx.peer.clone();
+            tokio::spawn(async move {
+                let mut done = 0.0;
+                while let Some(message) = rx.recv().await {
+                    done += 1.0;
+                    let _ = peer
+                        .notify_progress(
+                            ProgressNotificationParam::new(token.clone(), done)
+                                .with_message(message),
+                        )
+                        .await;
+                }
+            });
+        }
+        None => drop(rx),
+    }
+
     // `ci_at` is synchronous but internally spawns a tokio runtime
     // for the S3Remote cache + runs child processes that block.
     // Running it directly from this async tool handler would nest
     // tokio runtimes and panic on drop — delegate to the blocking
     // thread pool instead.
-    let root = root.to_path_buf();
-    let opts = opts.clone();
-    tokio::task::spawn_blocking(move || bento_core::ci_at(&root, &opts))
-        .await
-        .map_err(|e| anyhow::anyhow!("task join failed: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        bento_core::ci_at_with(&root, &opts, |executor| {
+            executor
+                .with_cancel(move || ct.is_cancelled())
+                .with_observer(move |dish| {
+                    let _ = tx.send(dish_progress(dish));
+                })
+        })
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("task join failed: {e}"))?
+}
+
+fn dish_progress(dish: &bento_core::ExecutedDish) -> String {
+    let failed = dish
+        .tasks
+        .iter()
+        .filter(|t| matches!(t.outcome, bento_core::TaskOutcome::Failed { .. }))
+        .count();
+    match failed {
+        0 => format!("{} ok ({} task(s))", dish.name, dish.tasks.len()),
+        n => format!("{} FAILED ({n} of {} task(s))", dish.name, dish.tasks.len()),
+    }
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -825,7 +884,11 @@ impl BentoServer {
     /// Everything `deploy` does apart from wrapping the outcome — kept
     /// out of the `#[tool]` fn so the whole flow can use `?` and land
     /// in one classified envelope.
-    async fn deploy_inner(&self, input: DeployArgs) -> Result<bento_core::ExecutionReport> {
+    async fn deploy_inner(
+        &self,
+        input: DeployArgs,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<bento_core::ExecutionReport> {
         let root = self.require_workspace_root().await?;
         let workspace = Workspace::load(&root)?;
 
@@ -876,7 +939,7 @@ impl BentoServer {
             force_deploy: input.force.unwrap_or(false),
         };
 
-        let report = run_blocking(&root, &opts).await?;
+        let report = run_blocking(&root, &opts, ctx).await?;
 
         // Post-run: explicit single dish + only <no-{kind}> rows →
         // classified integration_not_configured.
@@ -928,6 +991,7 @@ impl BentoServer {
         &self,
         input: ExecArgs,
         task_name: &str,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         Ok(report_result(
             async {
@@ -950,7 +1014,7 @@ impl BentoServer {
                     environment: None,
                     force_deploy: false,
                 };
-                run_blocking(&root, &opts).await
+                run_blocking(&root, &opts, ctx).await
             }
             .await,
         ))

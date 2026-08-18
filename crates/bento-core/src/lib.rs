@@ -34,9 +34,9 @@ pub use plan::{
 };
 pub use plugins::build_registry;
 pub use run::{
-    ci_at, notify_at, pinned_path_env, resolve_target, CiOptions, ExecutedBento, ExecutedDish,
-    ExecutedTask, ExecutionReport, ExecutionSummary, Executor, InstallRecord, TargetRef,
-    TargetRefError, TaskOutcome,
+    ci_at, ci_at_with, notify_at, pinned_path_env, resolve_target, CiOptions, ExecutedBento,
+    ExecutedDish, ExecutedTask, ExecutionReport, ExecutionSummary, Executor, InstallRecord,
+    TargetRef, TargetRefError, TaskOutcome,
 };
 
 // Re-exports so the CLI can compose these without a direct dep on

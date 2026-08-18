@@ -330,7 +330,17 @@ pub struct Executor {
     /// `pnpm install` calls from racing on the workspace's hoisted
     /// `node_modules` and EEXIST-ing on a symlink.
     install_scopes: std::sync::Mutex<HashMap<PathBuf, InstallSlot>>,
+    /// Called with each dish as it finishes. For out-of-band progress
+    /// (bento-mcp turns these into `notifications/progress`); the CLI
+    /// leaves it unset because it streams its own output.
+    observer: Option<DishObserver>,
+    /// Cooperative cancellation, polled between dish batches. A long
+    /// `ci` launched over MCP otherwise runs to completion after the
+    /// client has already walked away.
+    cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
+
+type DishObserver = Box<dyn Fn(&ExecutedDish) + Send + Sync>;
 
 /// Per-scope install ledger entry. `Ok(())` after a successful install,
 /// `Err(msg)` if the install command failed (so concurrent siblings can
@@ -352,6 +362,8 @@ impl Executor {
             pending_writes: std::sync::Mutex::new(Vec::new()),
             deploy_state: std::sync::Mutex::new(deploy_state),
             install_scopes: std::sync::Mutex::new(HashMap::new()),
+            observer: None,
+            cancelled: None,
         }
     }
 
@@ -374,6 +386,8 @@ impl Executor {
             pending_writes: std::sync::Mutex::new(Vec::new()),
             deploy_state: std::sync::Mutex::new(deploy_state),
             install_scopes: std::sync::Mutex::new(HashMap::new()),
+            observer: None,
+            cancelled: None,
         }
     }
 
@@ -382,6 +396,21 @@ impl Executor {
     /// CLI populates it via [`IntegrationRegistry::builtin`].
     pub fn with_integrations(mut self, integrations: IntegrationRegistry) -> Self {
         self.integrations = integrations;
+        self
+    }
+
+    /// Report each dish as it finishes, for callers that can't watch
+    /// stdout (see [`Executor::observer`]). Called from the executor
+    /// thread, so keep it cheap — send on a channel, don't block.
+    pub fn with_observer(mut self, f: impl Fn(&ExecutedDish) + Send + Sync + 'static) -> Self {
+        self.observer = Some(Box::new(f));
+        self
+    }
+
+    /// Stop between dish batches when `f` returns true. The report
+    /// covers whatever finished before the stop.
+    pub fn with_cancel(mut self, f: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        self.cancelled = Some(Box::new(f));
         self
     }
 
@@ -578,6 +607,10 @@ impl Executor {
                 // deterministic for logs, and gets ≈90% of the benefit of
                 // a work-stealing scheduler for typical monorepos.
                 for chunk in targets.chunks(parallelism) {
+                    if self.cancelled.as_ref().is_some_and(|f| f()) {
+                        stop = true;
+                        break 'levels;
+                    }
                     // Toolchains resolve on this thread, before the
                     // fan-out: `ensure_toolchain` mutates PATH (setenv
                     // from worker threads races getenv in siblings —
@@ -629,6 +662,9 @@ impl Executor {
                             .tasks
                             .iter()
                             .any(|t| matches!(t.outcome, TaskOutcome::Failed { .. }));
+                        if let Some(observe) = &self.observer {
+                            observe(&exec_dish);
+                        }
                         exec_bento.dishes.push(exec_dish);
 
                         if had_failure && fail_fast {
@@ -2685,14 +2721,24 @@ pub fn resolve_target(workspace: &Workspace, target: &str) -> Result<TargetRef> 
 // ── Top-level entry point ──────────────────────────────────────────
 
 pub fn ci_at(root: impl AsRef<Path>, opts: &CiOptions) -> Result<ExecutionReport> {
+    ci_at_with(root, opts, |e| e)
+}
+
+/// [`ci_at`] with a hook to configure the executor first — used by
+/// `bento-mcp` to attach progress reporting and cancellation, which
+/// the CLI doesn't need.
+pub fn ci_at_with(
+    root: impl AsRef<Path>,
+    opts: &CiOptions,
+    configure: impl FnOnce(Executor) -> Executor,
+) -> Result<ExecutionReport> {
     let root = root.as_ref();
     let workspace = Workspace::load(root)
         .with_context(|| format!("loading workspace at {}", root.display()))?;
     let registry = crate::build_registry(&workspace);
     let integrations = IntegrationRegistry::builtin();
     let cache = LocalCache::new(crate::plan::default_cache_root()?);
-    Executor::new(workspace, registry, cache)
-        .with_integrations(integrations)
+    configure(Executor::new(workspace, registry, cache).with_integrations(integrations))
         .execute(opts)
 }
 
@@ -2765,6 +2811,29 @@ run = "cp input.txt out.txt"
         let cache_dir = tempfile::tempdir().unwrap();
         let cache = LocalCache::new(cache_dir.path());
         (Executor::new(workspace, registry, cache), cache_dir)
+    }
+
+    #[test]
+    fn observer_sees_each_dish_and_cancel_stops_the_run() {
+        let tmp = shell_workspace();
+        let (exec, _cache) = executor(tmp.path());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let report = exec
+            .with_observer(move |d| sink.lock().unwrap().push(d.name.clone()))
+            .execute(&CiOptions::default())
+            .unwrap();
+        assert_eq!(report.summary.dishes, 1);
+        assert_eq!(*seen.lock().unwrap(), vec!["d".to_string()]);
+
+        let tmp = shell_workspace();
+        let (exec, _cache) = executor(tmp.path());
+        let report = exec
+            .with_cancel(|| true)
+            .execute(&CiOptions::default())
+            .unwrap();
+        assert_eq!(report.summary.dishes, 0, "cancelled before the first dish");
+        assert!(!tmp.path().join("dish/out.txt").exists());
     }
 
     #[test]
