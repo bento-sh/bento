@@ -658,6 +658,13 @@ fn unpack_at<R: Read>(entry: &mut tar::Entry<R>, root: &Path, rel: &Path) -> Res
             );
         }
     }
+    // Restored files get "now", not the mtime baked into the archive.
+    // Downstream incremental tools (tsc, webpack, make, cargo) compare
+    // source mtime against output mtime; a bundle built last week
+    // restores outputs that look older than the sources they came from,
+    // and every one of them rebuilds on the spot — which is exactly the
+    // work the cache hit was meant to skip.
+    entry.set_preserve_mtime(false);
     entry.unpack(&dest)?;
     Ok(())
 }
