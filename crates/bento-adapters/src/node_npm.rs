@@ -38,7 +38,7 @@ impl LanguageAdapter for NodeNpmAdapter {
     }
 
     fn detect(&self, dir: &Path) -> bool {
-        dir.join("package-lock.json").is_file()
+        crate::node_common::detect_node_pm(dir) == Some("npm")
     }
 
     fn fingerprint_files(&self) -> Vec<String> {
@@ -87,6 +87,9 @@ impl LanguageAdapter for NodeNpmAdapter {
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {
+        if crate::node_common::package_has_nothing_to_install(dir) {
+            return InstallProbe::Ready;
+        }
         // `npm ci` writes `.package-lock.json` inside `node_modules/` as
         // its canonical "install completed" sentinel. A partial / torn
         // `node_modules` without the sentinel still counts as missing.
@@ -195,8 +198,10 @@ mod tests {
     }
 
     #[test]
-    fn detect_returns_false_without_lockfile() {
+    fn detect_true_for_lone_package_json_false_for_pnpm_lockfile() {
         let tmp = tmp_with(&[("package.json", r#"{"name":"x"}"#)]);
+        assert!(NodeNpmAdapter.detect(tmp.path()));
+        let tmp = tmp_with(&[("package.json", r#"{"name":"x"}"#), ("pnpm-lock.yaml", "")]);
         assert!(!NodeNpmAdapter.detect(tmp.path()));
     }
 
@@ -343,8 +348,20 @@ mod tests {
     }
 
     #[test]
+    fn install_probe_ready_when_nothing_to_install() {
+        let tmp = tmp_with(&[("package.json", r#"{"scripts":{"build":"true"}}"#)]);
+        assert!(matches!(
+            NodeNpmAdapter.install_probe(tmp.path()),
+            InstallProbe::Ready
+        ));
+    }
+
+    #[test]
     fn install_probe_missing_when_no_node_modules() {
-        let tmp = tmp_with(&[("package.json", r#"{}"#), ("package-lock.json", "{}")]);
+        let tmp = tmp_with(&[
+            ("package.json", r#"{"dependencies":{"left-pad":"1"}}"#),
+            ("package-lock.json", "{}"),
+        ]);
         assert!(matches!(
             NodeNpmAdapter.install_probe(tmp.path()),
             InstallProbe::Missing { .. }
@@ -353,7 +370,10 @@ mod tests {
 
     #[test]
     fn install_probe_missing_when_node_modules_lacks_sentinel() {
-        let tmp = tmp_with(&[("package.json", r#"{}"#), ("package-lock.json", "{}")]);
+        let tmp = tmp_with(&[
+            ("package.json", r#"{"dependencies":{"left-pad":"1"}}"#),
+            ("package-lock.json", "{}"),
+        ]);
         std::fs::create_dir(tmp.path().join("node_modules")).unwrap();
         // Has a populated node_modules but no `.package-lock.json` sentinel
         // (torn install / manually nuked). Should still probe Missing.

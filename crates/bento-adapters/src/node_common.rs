@@ -169,6 +169,75 @@ fn read_volta_node(pkg_json: &Path) -> Result<Option<String>> {
 /// inside a shared JS workspace returns the same root, so concurrent
 /// dishes pile into one install instead of racing on the hoisted
 /// `node_modules` symlinks.
+/// Which Node-family package manager owns `dir`. Requires a
+/// `package.json`; then, in order: the `packageManager` field (corepack)
+/// in this or any ancestor `package.json`, the nearest lockfile in this
+/// dir or an ancestor (workspace members never carry their own), and
+/// finally npm as the ecosystem default. The ancestor walk stops at the
+/// repo root (`.git` / `bento.toml`), inclusive.
+pub fn detect_node_pm(dir: &Path) -> Option<&'static str> {
+    if !dir.join("package.json").is_file() {
+        return None;
+    }
+    let mut current = Some(dir);
+    let mut lockfile_pm: Option<&'static str> = None;
+    while let Some(d) = current {
+        if let Ok(Some(v)) = read_package_json(&d.join("package.json")) {
+            if let Some(pm) = v.get("packageManager").and_then(|p| p.as_str()) {
+                let name = pm.split('@').next().unwrap_or(pm);
+                return Some(match name {
+                    "pnpm" => "pnpm",
+                    "yarn" => "yarn",
+                    "bun" => "bun",
+                    _ => "npm",
+                });
+            }
+        }
+        if lockfile_pm.is_none() {
+            lockfile_pm = [
+                ("pnpm-lock.yaml", "pnpm"),
+                ("yarn.lock", "yarn"),
+                ("bun.lock", "bun"),
+                ("bun.lockb", "bun"),
+                ("package-lock.json", "npm"),
+                ("npm-shrinkwrap.json", "npm"),
+            ]
+            .into_iter()
+            .find(|(f, _)| d.join(f).is_file())
+            .map(|(_, pm)| pm);
+        }
+        let at_repo_root = d.join(".git").exists() || d.join("bento.toml").is_file();
+        current = if at_repo_root { None } else { d.parent() };
+    }
+    Some(lockfile_pm.unwrap_or("npm"))
+}
+
+/// True when `dir/package.json` declares nothing to install — no
+/// dependency map with entries and no `workspaces`. `npm ci` on such
+/// a package writes no `node_modules/` at all, so sentinel-based
+/// probes would report Missing forever.
+pub fn package_has_nothing_to_install(dir: &Path) -> bool {
+    let Ok(Some(v)) = read_package_json(&dir.join("package.json")) else {
+        return false;
+    };
+    if v.get("workspaces").is_some() {
+        return false;
+    }
+    [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ]
+    .iter()
+    .all(|k| {
+        v.get(k)
+            .and_then(|m| m.as_object())
+            .map(|m| m.is_empty())
+            .unwrap_or(true)
+    })
+}
+
 pub fn find_node_workspace_root(dir: &Path) -> Option<PathBuf> {
     let mut current = dir.parent()?;
     loop {
@@ -397,6 +466,45 @@ mod tests {
         let leaf = tmp.path().join("nested");
         std::fs::create_dir_all(&leaf).unwrap();
         assert_eq!(find_node_workspace_root(&leaf), None);
+    }
+
+    #[test]
+    fn detect_node_pm_uses_package_manager_field_then_ancestor_lockfile_then_npm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+        let member = root.join("packages/a");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(member.join("package.json"), r#"{"name":"a"}"#).unwrap();
+        // Member has no lockfile of its own → ancestor lockfile wins.
+        assert_eq!(detect_node_pm(&member), Some("pnpm"));
+        assert_eq!(detect_node_pm(root), Some("pnpm"));
+        // packageManager beats the lockfile.
+        std::fs::write(
+            member.join("package.json"),
+            r#"{"name":"a","packageManager":"bun@1.2.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(detect_node_pm(&member), Some("bun"));
+        // No package.json → not node at all.
+        assert_eq!(detect_node_pm(&root.join("packages")), None);
+        // Lone package.json, nothing else → npm.
+        let lone = root.join("lone");
+        std::fs::create_dir_all(&lone).unwrap();
+        std::fs::write(lone.join("package.json"), "{}").unwrap();
+        // (`lone` sits under root, which has pnpm-lock → pnpm; use a
+        // fresh tree for the true fallback.)
+        assert_eq!(detect_node_pm(&lone), Some("pnpm"));
+        let solo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(solo.path().join(".git")).unwrap();
+        std::fs::write(solo.path().join("package.json"), "{}").unwrap();
+        assert_eq!(detect_node_pm(solo.path()), Some("npm"));
     }
 
     #[test]

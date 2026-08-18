@@ -44,7 +44,7 @@ impl LanguageAdapter for BunAdapter {
     }
 
     fn detect(&self, dir: &Path) -> bool {
-        dir.join("bun.lock").is_file() || dir.join("bun.lockb").is_file()
+        crate::node_common::detect_node_pm(dir) == Some("bun")
     }
 
     fn fingerprint_files(&self) -> Vec<String> {
@@ -102,6 +102,9 @@ impl LanguageAdapter for BunAdapter {
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {
+        if crate::node_common::package_has_nothing_to_install(dir) {
+            return InstallProbe::Ready;
+        }
         // Bun doesn't write a canonical install-sentinel file, so we
         // fall back to checking `node_modules/` exists and has at
         // least one child entry. An empty or missing directory means

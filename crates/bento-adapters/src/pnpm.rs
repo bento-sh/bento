@@ -39,7 +39,7 @@ impl LanguageAdapter for PnpmAdapter {
     }
 
     fn detect(&self, dir: &Path) -> bool {
-        dir.join("pnpm-lock.yaml").is_file()
+        crate::node_common::detect_node_pm(dir) == Some("pnpm")
     }
 
     fn fingerprint_files(&self) -> Vec<String> {
@@ -87,6 +87,9 @@ impl LanguageAdapter for PnpmAdapter {
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {
+        if crate::node_common::package_has_nothing_to_install(dir) {
+            return InstallProbe::Ready;
+        }
         // pnpm writes `node_modules/.modules.yaml` on every install; it
         // records the store path + hoisting config, and its absence
         // reliably indicates an incomplete install.

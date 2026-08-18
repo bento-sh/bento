@@ -40,7 +40,7 @@ impl LanguageAdapter for YarnAdapter {
     }
 
     fn detect(&self, dir: &Path) -> bool {
-        dir.join("yarn.lock").is_file()
+        crate::node_common::detect_node_pm(dir) == Some("yarn")
     }
 
     fn fingerprint_files(&self) -> Vec<String> {
@@ -92,6 +92,9 @@ impl LanguageAdapter for YarnAdapter {
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {
+        if crate::node_common::package_has_nothing_to_install(dir) {
+            return InstallProbe::Ready;
+        }
         // Yarn v2+ with PnP skips `node_modules` entirely and writes
         // `.pnp.cjs` at the project root — that counts as Ready.
         // Classic v1 (`node_modules/.yarn-integrity`) and Berry's

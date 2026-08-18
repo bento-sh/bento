@@ -1316,7 +1316,10 @@ impl Executor {
         let reason = if opts.force_install {
             "--force-install".to_string()
         } else {
-            match adapter.install_probe(&loaded.dir) {
+            // Probe where the install actually lands (the workspace
+            // root for JS workspaces) — members never carry their own
+            // sentinel, and probing them would reinstall on every run.
+            match adapter.install_probe(&adapter.install_scope(&loaded.dir)) {
                 InstallProbe::Ready => {
                     // `bento install` is an explicit user action — run
                     // the adapter's install command even when the probe
