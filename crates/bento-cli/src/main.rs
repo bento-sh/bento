@@ -11,6 +11,7 @@ mod migrate;
 mod plan_print;
 mod plugins;
 mod prime;
+mod proc_group;
 mod release;
 mod run_print;
 mod scaffold;
@@ -967,6 +968,7 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
     }
     println!();
 
+    proc_group::install_signal_handler();
     let handles: Vec<_> = targets
         .into_iter()
         .map(|(loaded, globs, path_env)| {
@@ -1012,13 +1014,11 @@ fn supervise_dish(
                 String::new()
             },
         );
-        let _ = child.kill();
-        let _ = child.wait();
+        proc_group::kill(&mut child);
         child = spawn_serve_piped(&dish_dir, &serve_run, &label, path_env.as_deref())?;
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    proc_group::kill(&mut child);
     Ok(())
 }
 
@@ -1039,7 +1039,7 @@ fn spawn_serve_piped(
     if let Some(path) = path_env {
         cmd.env("PATH", path);
     }
-    let mut child = cmd.spawn().with_context(|| format!("spawning `{run}`"))?;
+    let mut child = proc_group::spawn(&mut cmd).with_context(|| format!("spawning `{run}`"))?;
 
     // Forward child stdout / stderr to ours, prefixed with the dish label.
     if let Some(out) = child.stdout.take() {
@@ -1113,6 +1113,7 @@ fn run_dev(global: &GlobalFlags, dish_name: String) -> anyhow::Result<i32> {
     println!();
 
     let path_env = bento_core::pinned_path_env(&workspace, loaded, adapter)?;
+    proc_group::install_signal_handler();
     let mut child = spawn_serve(&loaded.dir, &serve.run, path_env.as_deref())?;
 
     while let Some(batch) = watcher.next_batch() {
@@ -1130,13 +1131,11 @@ fn run_dev(global: &GlobalFlags, dish_name: String) -> anyhow::Result<i32> {
                 String::new()
             },
         );
-        let _ = child.kill();
-        let _ = child.wait();
+        proc_group::kill(&mut child);
         child = spawn_serve(&loaded.dir, &serve.run, path_env.as_deref())?;
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    proc_group::kill(&mut child);
     Ok(0)
 }
 
@@ -1151,7 +1150,7 @@ fn spawn_serve(
     if let Some(path) = path_env {
         cmd.env("PATH", path);
     }
-    cmd.spawn().with_context(|| format!("spawning `{run}`"))
+    proc_group::spawn(&mut cmd).with_context(|| format!("spawning `{run}`"))
 }
 
 /// Drive `bento run <dish> <task> -- <args...>` — invoke a named

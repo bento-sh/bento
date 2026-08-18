@@ -341,7 +341,7 @@ Optional. Declares the long-running command for `bento serve <bento>` (every dis
 |-------|------|---------|-------------|
 | `run` | string | required | Long-running command. Bento spawns it, watches the dish's inputs, and restarts on change. |
 
-The command runs with the dish's pinned toolchain in front of `PATH` — same semantics as a cached task.
+The command runs with the dish's pinned toolchain in front of `PATH` — same semantics as a cached task — in its own process group, so a restart takes down the whole tree the command spawned (a shell wrapper plus the real server) rather than leaking the previous process onto the port. Ctrl-C kills the served children before bento exits.
 
 ### `[integrations.<id>]`
 
