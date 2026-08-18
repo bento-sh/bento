@@ -169,9 +169,10 @@ impl Planner {
         let mut clean_dirs: Option<BTreeSet<PathBuf>> = None;
         if let (Some(base_ref), Some(diff)) = (&opts.since, &self.diff) {
             let dish_rels: Vec<PathBuf> = self.workspace.dishes_by_path.keys().cloned().collect();
-            let dirty = diff
+            let mut dirty = diff
                 .changed_dirs(base_ref, dish_rels.clone())
                 .with_context(|| format!("computing diff against {base_ref}"))?;
+            spread_dirty_to_dependents(&self.workspace, &mut dirty);
             clean_dirs = Some(
                 dish_rels
                     .into_iter()
@@ -195,8 +196,14 @@ impl Planner {
             // the dependent's cache pessimistically.
             let graph = crate::graph::build(&self.workspace, name)
                 .with_context(|| format!("building dep graph for bento '{name}'"))?;
-            let dep_sigs = crate::cascade::compute(&self.workspace, &graph, &self.registry)
-                .with_context(|| format!("computing dep signatures for bento '{name}'"))?;
+            let dep_sigs = crate::cascade::compute(
+                &self.workspace,
+                &graph,
+                &self.registry,
+                &self.integrations,
+                &opts.env_aliases,
+            )
+            .with_context(|| format!("computing dep signatures for bento '{name}'"))?;
 
             let mut dishes = Vec::new();
             for dish_ref in &bento.config.dishes {
@@ -565,7 +572,71 @@ pub(crate) fn resolve_tasks(
             t.no_cache = true;
         }
     }
-    Ok(tasks)
+    Ok(order_by_deps(tasks))
+}
+
+/// A dish whose dep changed is itself changed. The git-diff pre-filter
+/// only sees files under each dish dir, so without this a dish would be
+/// reported `skipped_diff_clean` while the library it builds against
+/// was edited — the opposite of the cascade the cache key implements.
+/// `force_independent` opts out, same as the key cascade.
+fn spread_dirty_to_dependents(workspace: &Workspace, dirty: &mut BTreeSet<PathBuf>) {
+    loop {
+        let mut grew = false;
+        for (rel, loaded) in &workspace.dishes_by_path {
+            if dirty.contains(rel) || loaded.config.force_independent {
+                continue;
+            }
+            let depends_on_dirty = loaded.config.depends_on.iter().any(|dep| {
+                workspace
+                    .dishes_by_name
+                    .get(dep)
+                    .is_some_and(|d| dirty.contains(&d.rel))
+            });
+            if depends_on_dirty {
+                dirty.insert(rel.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            return;
+        }
+    }
+}
+
+/// Stable topological order over intra-dish `depends_on`. Callers mix a
+/// dep task's computed key into the dependent's, and they walk this
+/// list once — alphabetical order only happened to put `build` before
+/// `railway:deploy`, and a dep sorting *after* its dependent silently
+/// dropped the mix-in. Alphabetical order is preserved between tasks
+/// with no dependency relation; a cycle leaves the rest as-is.
+fn order_by_deps(tasks: Vec<ResolvedTask>) -> Vec<ResolvedTask> {
+    let known: BTreeSet<String> = tasks.iter().map(|t| t.name.clone()).collect();
+    let mut pending: Vec<Option<ResolvedTask>> = tasks.into_iter().map(Some).collect();
+    let mut emitted: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<ResolvedTask> = Vec::with_capacity(pending.len());
+
+    loop {
+        let mut progressed = false;
+        for slot in pending.iter_mut() {
+            let ready = slot.as_ref().is_some_and(|t| {
+                t.depends_on
+                    .iter()
+                    .all(|d| emitted.contains(d) || !known.contains(d))
+            });
+            if ready {
+                let t = slot.take().expect("ready implies Some");
+                emitted.insert(t.name.clone());
+                out.push(t);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    out.extend(pending.into_iter().flatten());
+    out
 }
 
 pub const LIFECYCLE_TASKS: &[&str] = &["build", "check", "test", "lint"];
@@ -1411,6 +1482,64 @@ dishes = ["apps/api"]"#,
             Some(host_triple().as_str()),
             "manifest must carry the host triple so a stale cross-arch cache entry is diagnosable",
         );
+    }
+
+    #[test]
+    fn diff_dirty_spreads_to_dependents_unless_force_independent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("bentos")).unwrap();
+        std::fs::write(
+            root.join("bentos/prod.toml"),
+            "name = \"prod\"\ndishes = [\"lib\", \"app\", \"solo\"]",
+        )
+        .unwrap();
+        for (dir, body) in [
+            ("lib", "name = \"lib\"\n"),
+            ("app", "name = \"app\"\ndepends_on = [\"lib\"]\n"),
+            (
+                "solo",
+                "name = \"solo\"\ndepends_on = [\"lib\"]\nforce_independent = true\n",
+            ),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("dish.toml"), body).unwrap();
+        }
+
+        let workspace = Workspace::load(root).unwrap();
+        let mut dirty: BTreeSet<PathBuf> = [PathBuf::from("lib")].into_iter().collect();
+        spread_dirty_to_dependents(&workspace, &mut dirty);
+
+        assert!(dirty.contains(Path::new("app")), "{dirty:?}");
+        assert!(!dirty.contains(Path::new("solo")), "{dirty:?}");
+    }
+
+    #[test]
+    fn dep_task_is_ordered_before_its_dependent() {
+        let task = |name: &str, deps: &[&str]| ResolvedTask {
+            name: name.into(),
+            run: "true".into(),
+            inputs: vec![],
+            outputs: vec![],
+            workspace_outputs: vec![],
+            env: vec![],
+            retry: 0,
+            no_cache: false,
+            required_env: vec![],
+            required_cli: vec![],
+            integration_kind: None,
+            depends_on: deps.iter().map(|d| d.to_string()).collect(),
+        };
+        // 'aws:deploy' sorts before 'build', so the alphabetical walk
+        // used to hash it with no key for its dep.
+        let ordered = order_by_deps(vec![task("aws:deploy", &["build"]), task("build", &[])]);
+        let names: Vec<&str> = ordered.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["build", "aws:deploy"]);
+
+        // Unrelated tasks keep alphabetical order.
+        let ordered = order_by_deps(vec![task("build", &[]), task("test", &[])]);
+        let names: Vec<&str> = ordered.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["build", "test"]);
     }
 
     #[test]

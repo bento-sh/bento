@@ -577,8 +577,14 @@ impl Executor {
 
             let graph = crate::graph::build(&self.workspace, bento_name)
                 .with_context(|| format!("building dep graph for bento '{bento_name}'"))?;
-            let dep_sigs = crate::cascade::compute(&self.workspace, &graph, &self.registry)
-                .with_context(|| format!("computing dep signatures for bento '{bento_name}'"))?;
+            let dep_sigs = crate::cascade::compute(
+                &self.workspace,
+                &graph,
+                &self.registry,
+                &self.integrations,
+                &opts.secret_aliases,
+            )
+            .with_context(|| format!("computing dep signatures for bento '{bento_name}'"))?;
 
             let mut exec_bento = ExecutedBento {
                 name: bento_name.clone(),

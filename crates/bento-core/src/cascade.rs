@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use bento_adapters::{AdapterRegistry, LanguageAdapter};
+use bento_adapters::{AdapterRegistry, IntegrationRegistry, LanguageAdapter};
 use bento_config::{DishConfig, Workspace};
 
 use crate::graph::BentoGraph;
@@ -46,6 +46,8 @@ pub fn compute(
     workspace: &Workspace,
     graph: &BentoGraph,
     registry: &AdapterRegistry,
+    integrations: &IntegrationRegistry,
+    env_aliases: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, DishSig>> {
     let mut sigs: BTreeMap<String, DishSig> = BTreeMap::new();
 
@@ -55,13 +57,28 @@ pub fn compute(
                 format!("dish '{dish_name}' referenced by graph but missing from workspace")
             })?;
             let adapter = resolve_adapter(registry, loaded.config.language.as_deref(), &loaded.dir);
-            let content =
-                content_hash(&loaded.dir, &loaded.config, adapter).with_context(|| {
-                    format!(
-                        "hashing content for dish '{dish_name}' at {}",
-                        loaded.dir.display()
-                    )
-                })?;
+            let tasks = crate::plan::resolve_tasks(
+                &loaded.dir,
+                &loaded.config,
+                adapter,
+                &crate::plan::resolve_integrations(integrations, loaded),
+            )
+            .with_context(|| format!("resolving tasks for dish '{dish_name}'"))?;
+            let toolchain = crate::plan::resolve_toolchain_pin(loaded, &workspace.repo, adapter)?;
+            let content = content_hash(&DishInputs {
+                dish_dir: &loaded.dir,
+                dish: &loaded.config,
+                adapter,
+                tasks: &tasks,
+                toolchain: toolchain.as_ref(),
+                env_aliases,
+            })
+            .with_context(|| {
+                format!(
+                    "hashing content for dish '{dish_name}' at {}",
+                    loaded.dir.display()
+                )
+            })?;
 
             let effective = if loaded.config.force_independent {
                 content
@@ -120,14 +137,60 @@ fn resolve_adapter<'a>(
     registry.detect(dir)
 }
 
-fn content_hash(
-    dish_dir: &Path,
-    dish: &DishConfig,
-    adapter: Option<&dyn LanguageAdapter>,
-) -> Result<DishSig> {
+struct DishInputs<'a> {
+    dish_dir: &'a Path,
+    dish: &'a DishConfig,
+    adapter: Option<&'a dyn LanguageAdapter>,
+    tasks: &'a [crate::plan::ResolvedTask],
+    toolchain: Option<&'a bento_toolchain::Resolution>,
+    env_aliases: &'a BTreeMap<String, String>,
+}
+
+fn content_hash(input: &DishInputs<'_>) -> Result<DishSig> {
+    let DishInputs {
+        dish_dir,
+        dish,
+        adapter,
+        tasks,
+        toolchain,
+        env_aliases,
+    } = *input;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"bento-dish-content-v1");
     hasher.update(dish.name.as_bytes());
+
+    // Everything about the dep that its own task keys hash, minus its
+    // input files (walked below). Content alone left the dependent
+    // hitting cache after the dep's build command, env values,
+    // outputs, or toolchain pin changed — the dep rebuilt, the
+    // dependent didn't.
+    if let Some(r) = toolchain {
+        hasher.update(r.source.label().as_bytes());
+        hasher.update(r.tool.as_bytes());
+        hasher.update(r.version.as_deref().unwrap_or("system").as_bytes());
+    }
+    if let Some(a) = adapter {
+        hasher.update(a.id().as_bytes());
+        if let Some(v) = a.required_toolchain(dish_dir)? {
+            hasher.update(v.tool.as_bytes());
+            hasher.update(v.version.as_bytes());
+        }
+    }
+    for t in tasks {
+        for field in [&t.name, &t.run] {
+            hasher.update(field.as_bytes());
+        }
+        for glob in t.outputs.iter().chain(t.workspace_outputs.iter()) {
+            hasher.update(glob.as_bytes());
+        }
+        let mut env_names: Vec<&String> = t.env.iter().collect();
+        env_names.sort();
+        for name in env_names {
+            let source = env_aliases.get(name).map(String::as_str).unwrap_or(name);
+            hasher.update(name.as_bytes());
+            hasher.update(std::env::var(source).unwrap_or_default().as_bytes());
+        }
+    }
 
     // The signature must cover the dish's *source*, which lives in
     // task-level input globs (adapter defaults like `src/**` plus any
@@ -149,15 +212,10 @@ fn content_hash(
         for f in a.fingerprint_files() {
             add_glob(&mut globs, f);
         }
-        for t in a.default_tasks(dish_dir) {
-            for g in t.inputs.unwrap_or_default() {
-                add_glob(&mut globs, g);
-            }
-        }
     }
-    for t in dish.tasks.values() {
-        for g in t.inputs.clone().unwrap_or_default() {
-            add_glob(&mut globs, g);
+    for t in tasks {
+        for g in &t.inputs {
+            add_glob(&mut globs, g.clone());
         }
     }
 
@@ -222,6 +280,20 @@ mod tests {
     use super::*;
     use crate::graph::build as build_graph;
 
+    fn compute_sigs(
+        ws: &Workspace,
+        graph: &BentoGraph,
+        reg: &AdapterRegistry,
+    ) -> Result<BTreeMap<String, DishSig>> {
+        compute(
+            ws,
+            graph,
+            reg,
+            &IntegrationRegistry::empty(),
+            &BTreeMap::new(),
+        )
+    }
+
     fn two_dish_fixture() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -262,14 +334,41 @@ inputs = ["src.txt"]"#,
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
 
-        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        let sigs_before = compute_sigs(&ws, &graph, &reg).unwrap();
         std::fs::write(tmp.path().join("lib/src.txt"), b"v2").unwrap();
-        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+        let sigs_after = compute_sigs(&ws, &graph, &reg).unwrap();
 
         assert_ne!(sigs_before["lib"], sigs_after["lib"]);
         assert_ne!(
             sigs_before["app"], sigs_after["app"],
             "dependent must see a new signature when its dep changes"
+        );
+    }
+
+    #[test]
+    fn dep_command_change_propagates_to_dependent_signature() {
+        // Regression: the signature hashed the dep's files only, so
+        // changing what the dep *builds* (or its outputs / env) left
+        // every dependent on a stale cache hit.
+        let tmp = two_dish_fixture();
+        let sig_for = |run: &str| {
+            std::fs::write(
+                tmp.path().join("lib/dish.toml"),
+                format!(
+                    "name = \"lib\"\ninputs = [\"src.txt\"]\n\n[tasks.build]\nrun = \"{run}\"\n"
+                ),
+            )
+            .unwrap();
+            let ws = Workspace::load(tmp.path()).unwrap();
+            let graph = build_graph(&ws, "prod").unwrap();
+            compute_sigs(&ws, &graph, &AdapterRegistry::builtin()).unwrap()
+        };
+        let before = sig_for("make debug");
+        let after = sig_for("make release");
+        assert_ne!(before["lib"], after["lib"]);
+        assert_ne!(
+            before["app"], after["app"],
+            "dependent must see a new signature when its dep's build command changes"
         );
     }
 
@@ -290,9 +389,9 @@ force_independent = true"#,
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
 
-        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        let sigs_before = compute_sigs(&ws, &graph, &reg).unwrap();
         std::fs::write(tmp.path().join("lib/src.txt"), b"v2").unwrap();
-        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+        let sigs_after = compute_sigs(&ws, &graph, &reg).unwrap();
 
         assert_ne!(sigs_before["lib"], sigs_after["lib"]);
         assert_eq!(
@@ -317,9 +416,9 @@ force_independent = true"#,
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
 
-        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        let sigs_before = compute_sigs(&ws, &graph, &reg).unwrap();
         std::fs::write(tmp.path().join("app/src.txt"), b"app-v2").unwrap();
-        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+        let sigs_after = compute_sigs(&ws, &graph, &reg).unwrap();
 
         assert_ne!(
             sigs_before["app"], sigs_after["app"],
@@ -352,7 +451,7 @@ dishes = ["a", "b"]"#,
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
 
-        let sigs = compute(&ws, &graph, &reg).unwrap();
+        let sigs = compute_sigs(&ws, &graph, &reg).unwrap();
         assert_ne!(sigs["a"], sigs["b"]);
     }
 
@@ -400,9 +499,9 @@ inputs = ["src.txt"]"#,
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
 
-        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        let sigs_before = compute_sigs(&ws, &graph, &reg).unwrap();
         std::fs::write(root.join("lib/src/lib.py"), b"X = 2\n").unwrap();
-        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+        let sigs_after = compute_sigs(&ws, &graph, &reg).unwrap();
 
         assert_ne!(
             sigs_before["lib"], sigs_after["lib"],
@@ -455,9 +554,9 @@ inputs = ["src.txt"]"#,
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
 
-        let sigs_before = compute(&ws, &graph, &reg).unwrap();
+        let sigs_before = compute_sigs(&ws, &graph, &reg).unwrap();
         std::fs::write(root.join("lib/data/seed.txt"), b"v2").unwrap();
-        let sigs_after = compute(&ws, &graph, &reg).unwrap();
+        let sigs_after = compute_sigs(&ws, &graph, &reg).unwrap();
 
         assert_ne!(sigs_before["lib"], sigs_after["lib"]);
         assert_ne!(
@@ -491,7 +590,7 @@ force_independent = true"#,
         let ws = Workspace::load(tmp.path()).unwrap();
         let graph = build_graph(&ws, "prod").unwrap();
         let reg = AdapterRegistry::builtin();
-        let sigs = compute(&ws, &graph, &reg).unwrap();
+        let sigs = compute_sigs(&ws, &graph, &reg).unwrap();
         let app = &ws.dishes_by_name["app"];
         let deps = deps_for_key(&app.config, &sigs);
         assert!(deps.is_empty());

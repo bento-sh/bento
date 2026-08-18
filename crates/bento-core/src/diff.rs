@@ -68,7 +68,12 @@ impl GitDiff {
     /// Returned paths are relative to [`repo_root`](Self::repo_root).
     pub fn changed_files(&self, base_ref: &str) -> Result<BTreeSet<PathBuf>> {
         let mut all = BTreeSet::new();
-        all.extend(self.run_git_names(&["diff", "--name-only", base_ref])?);
+        // `--relative` anchors output at `repo_root`, which is the
+        // *workspace* root for the planner: `git diff` otherwise prints
+        // paths relative to the enclosing git root, so a workspace
+        // nested under it matched no dish and `--since` reported every
+        // dish clean. `ls-files` is already cwd-relative.
+        all.extend(self.run_git_names(&["diff", "--name-only", "--relative", base_ref])?);
         all.extend(self.run_git_names(&["ls-files", "--others", "--exclude-standard"])?);
         Ok(all)
     }
@@ -254,6 +259,29 @@ mod tests {
 
         assert!(dirty.contains(&PathBuf::from("apps/api")));
         assert!(!dirty.contains(&PathBuf::from("apps/web")));
+    }
+
+    #[test]
+    fn changed_dirs_works_when_workspace_is_nested_below_the_git_root() {
+        // Regression: `git diff --name-only` prints repo-root-relative
+        // paths, so a workspace at <repo>/monorepo compared them
+        // against workspace-relative dish dirs, matched nothing, and
+        // reported every dish clean.
+        let tmp = init_repo();
+        write(tmp.path(), "monorepo/apps/api/main.go", "package main\n");
+        git(tmp.path(), &["add", "."]);
+        git(tmp.path(), &["commit", "--quiet", "-m", "nested"]);
+        write(
+            tmp.path(),
+            "monorepo/apps/api/main.go",
+            "package main\n// v2\n",
+        );
+
+        let diff = GitDiff::new(tmp.path().join("monorepo"));
+        let dirty = diff
+            .changed_dirs("HEAD", vec![PathBuf::from("apps/api")])
+            .unwrap();
+        assert!(dirty.contains(&PathBuf::from("apps/api")), "{dirty:?}");
     }
 
     #[test]
