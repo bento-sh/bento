@@ -5,10 +5,11 @@
 //! - Toolchain pin (priority): `.ruby-version` (rbenv/rvm/asdf convention) >
 //!   the `ruby "x.y.z"` directive in `Gemfile` > `ruby` line in
 //!   `.tool-versions` (asdf/mise).
-//! - Install: `bundle install`, probe-driven via `bundle check`.
+//! - Install: `bundle install` (frozen when `Gemfile.lock` is present),
+//!   probe-driven via `bundle check`.
 //! - Default tasks: `bundle check` (build — Ruby is interpreted; the
-//!   side-effect-free resolve step), `bundle exec rspec` (test),
-//!   `bundle exec rubocop` (lint).
+//!   side-effect-free resolve step), `bundle exec rspec` (test, or
+//!   `rake test` on a minitest layout), `bundle exec rubocop` (lint).
 //!
 //! Ruby's lint story: rubocop is dominant. Users without it can override
 //! the `lint` task in their `dish.toml`; same with test runner choice.
@@ -19,7 +20,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{
+    AddOptions, Added, DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion,
+};
 
 pub struct RubyAdapter;
 
@@ -46,8 +49,12 @@ impl LanguageAdapter for RubyAdapter {
     }
 
     fn required_toolchain(&self, dir: &Path) -> Result<Option<ToolVersion>> {
-        // 1. `.ruby-version` — rbenv / rvm / asdf convention.
+        // 1. `.ruby-version` — rbenv / rvm / asdf convention. rvm writes
+        // `ruby-3.2.2`; rbenv writes the bare version. Strip the prefix
+        // so both cache-key and resolve identically. Other engines
+        // (`jruby-9.4.0.0`) keep their prefix — it's part of the pin.
         if let Some(v) = read_first_nonempty_line(&dir.join(".ruby-version"))? {
+            let v = v.strip_prefix("ruby-").unwrap_or(&v).to_string();
             return Ok(Some(ToolVersion {
                 tool: "ruby".into(),
                 version: v,
@@ -78,8 +85,43 @@ impl LanguageAdapter for RubyAdapter {
     fn install(&self, ctx: &TaskContext) -> Result<()> {
         let mut cmd = Command::new("bundle");
         cmd.arg("install");
+        // Same posture as `npm ci` / `pnpm --frozen-lockfile`: with a
+        // committed lockfile, install must fail rather than silently
+        // re-resolve and rewrite Gemfile.lock underneath the cache key.
+        // The env var, not `--frozen`: the flag is deprecated because it
+        // writes `.bundle/config` and is then remembered by every later
+        // bundler invocation in the tree.
+        if ctx.dish_dir.join("Gemfile.lock").is_file() {
+            cmd.env("BUNDLE_FROZEN", "true");
+        }
         ctx.apply_env(&mut cmd);
         crate::adapter::run_install_cmd(ctx, &mut cmd, "bundle install")
+    }
+
+    fn add(&self, ctx: &TaskContext, packages: &[&str], opts: AddOptions) -> Result<Vec<Added>> {
+        let mut cmd = Command::new("bundle");
+        cmd.arg("add");
+        for p in packages {
+            cmd.arg(p);
+        }
+        if opts.dev {
+            cmd.args(["--group", "development"]);
+        }
+        ctx.apply_env(&mut cmd);
+        let label = if opts.dev {
+            "bundle add --group development"
+        } else {
+            "bundle add"
+        };
+        crate::adapter::run_add_cmd(ctx, &mut cmd, label)?;
+        Ok(packages
+            .iter()
+            .map(|p| Added {
+                package: (*p).to_string(),
+                version: None,
+                note: None,
+            })
+            .collect())
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {
@@ -104,7 +146,7 @@ impl LanguageAdapter for RubyAdapter {
         crate::probe::memoised("ruby", &["--version"])
     }
 
-    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
+    fn default_tasks(&self, dir: &Path) -> Vec<DefaultTask> {
         let inputs = vec!["**/*.rb".into(), "Gemfile".into(), "Gemfile.lock".into()];
 
         vec![
@@ -121,11 +163,15 @@ impl LanguageAdapter for RubyAdapter {
                 outputs: None,
             },
             DefaultTask {
-                // RSpec is dominant; minitest users can override.
-                // We can't peek at the dish dir from default_tasks (no
-                // ctx), so default to rspec — the bigger community.
+                // RSpec is dominant, but a `test/` + Rakefile layout with
+                // no `spec/` is unambiguously minitest — running rspec
+                // there fails with "no examples found".
                 name: "test".into(),
-                run: "bundle exec rspec".into(),
+                run: if minitest_layout(dir) {
+                    "bundle exec rake test".into()
+                } else {
+                    "bundle exec rspec".into()
+                },
                 inputs: Some({
                     let mut v = inputs.clone();
                     v.push("spec/**/*.rb".into());
@@ -147,6 +193,10 @@ impl LanguageAdapter for RubyAdapter {
             },
         ]
     }
+}
+
+fn minitest_layout(dir: &Path) -> bool {
+    !dir.join("spec").is_dir() && dir.join("test").is_dir() && dir.join("Rakefile").is_file()
 }
 
 fn read_first_nonempty_line(path: &Path) -> Result<Option<String>> {
@@ -242,6 +292,35 @@ mod tests {
         let v = RubyAdapter.required_toolchain(tmp.path()).unwrap().unwrap();
         assert_eq!(v.tool, "ruby");
         assert_eq!(v.version, "3.2.2");
+    }
+
+    #[test]
+    fn toolchain_strips_rvm_ruby_prefix() {
+        let tmp = tmp_with(&[(".ruby-version", "ruby-3.2.2\n")]);
+        let v = RubyAdapter.required_toolchain(tmp.path()).unwrap().unwrap();
+        assert_eq!(v.version, "3.2.2");
+    }
+
+    #[test]
+    fn toolchain_keeps_non_ruby_engine_prefix() {
+        let tmp = tmp_with(&[(".ruby-version", "jruby-9.4.0.0\n")]);
+        let v = RubyAdapter.required_toolchain(tmp.path()).unwrap().unwrap();
+        assert_eq!(v.version, "jruby-9.4.0.0");
+    }
+
+    #[test]
+    fn test_task_uses_rake_on_a_minitest_layout() {
+        let tmp = tmp_with(&[("Gemfile", ""), ("Rakefile", "task :test\n")]);
+        std::fs::create_dir(tmp.path().join("test")).unwrap();
+        let tasks = RubyAdapter.default_tasks(tmp.path());
+        assert_eq!(tasks[1].run, "bundle exec rake test");
+
+        // A `spec/` alongside means rspec wins.
+        std::fs::create_dir(tmp.path().join("spec")).unwrap();
+        assert_eq!(
+            RubyAdapter.default_tasks(tmp.path())[1].run,
+            "bundle exec rspec"
+        );
     }
 
     #[test]
