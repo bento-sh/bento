@@ -5,18 +5,18 @@
 //! - Toolchain pin: `.deno-version` (convention) or the `deno` field in
 //!   `deno.json` if present. No `engines` fallback — Deno projects don't
 //!   mix Node toolchains the way Bun projects sometimes do.
-//! - Install: `deno install --lock-write` when a lockfile exists;
+//! - Install: `deno install --frozen=true` when a lockfile exists;
 //!   otherwise a no-op (Deno fetches on demand).
 //! - Default tasks: prefer `deno task <name>` when the dish declares
 //!   `tasks.{build,test,lint}` in `deno.json`; otherwise fall back to
-//!   `deno check`, `deno test`, and `deno lint`.
+//!   `deno check .`, `deno test`, and `deno lint`.
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{DefaultTask, DetectedTask, LanguageAdapter, TaskContext, ToolVersion};
 
 pub struct DenoAdapter;
 
@@ -60,28 +60,17 @@ impl LanguageAdapter for DenoAdapter {
             }
         }
         // 2. `deno` field in deno.json.
-        for file in ["deno.json", "deno.jsonc"] {
-            let path = dir.join(file);
-            if !path.is_file() {
-                continue;
-            }
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let stripped = strip_jsonc_comments(&raw);
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) else {
-                // jsonc parsing is best-effort — if we can't parse, we
-                // still want the rest of the adapter to work rather than
-                // erroring the whole plan.
-                continue;
-            };
-            if let Some(ver) = value.get("deno").and_then(|v| v.as_str()) {
-                let t = ver.trim();
-                if !t.is_empty() {
-                    return Ok(Some(ToolVersion {
-                        tool: "deno".into(),
-                        version: t.to_string(),
-                    }));
-                }
+        if let Some(ver) = read_deno_config(dir)
+            .as_ref()
+            .and_then(|v| v.get("deno"))
+            .and_then(|v| v.as_str())
+        {
+            let t = ver.trim();
+            if !t.is_empty() {
+                return Ok(Some(ToolVersion {
+                    tool: "deno".into(),
+                    version: t.to_string(),
+                }));
             }
         }
         // 3. .tool-versions (asdf/mise).
@@ -110,7 +99,31 @@ impl LanguageAdapter for DenoAdapter {
         crate::probe::memoised("deno", &["--version"])
     }
 
-    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
+    fn detected_tasks(&self, dir: &Path) -> Option<Vec<DetectedTask>> {
+        let value = read_deno_config(dir)?;
+        let tasks = value.get("tasks")?.as_object()?;
+        Some(
+            tasks
+                .keys()
+                .map(|k| k.trim())
+                .filter(|n| !n.is_empty())
+                .map(|n| DetectedTask {
+                    name: n.to_string(),
+                    run: format!("deno task {n}"),
+                })
+                .collect(),
+        )
+    }
+
+    fn default_tasks(&self, dir: &Path) -> Vec<DefaultTask> {
+        let declared = declared_tasks(dir);
+        let task_or = |name: &str, fallback: &str| {
+            if declared.iter().any(|d| d == name) {
+                format!("deno task {name}")
+            } else {
+                fallback.to_string()
+            }
+        };
         let inputs = vec![
             "src/**".into(),
             "**/*.ts".into(),
@@ -125,26 +138,53 @@ impl LanguageAdapter for DenoAdapter {
             DefaultTask {
                 name: "build".into(),
                 // `deno check` is the closest analogue to a build step — it
-                // type-checks the graph without emitting artefacts. If the
-                // user has a `build` task in deno.json, they can override.
-                run: "deno task build || deno check **/*.ts".into(),
+                // type-checks the graph without emitting artefacts.
+                run: task_or("build", "deno check ."),
                 inputs: Some(inputs.clone()),
                 outputs: Some(vec!["dist/**".into()]),
             },
             DefaultTask {
                 name: "test".into(),
-                run: "deno test --allow-read".into(),
+                run: task_or("test", "deno test --allow-read"),
                 inputs: Some(inputs.clone()),
                 outputs: None,
             },
             DefaultTask {
                 name: "lint".into(),
-                run: "deno lint".into(),
+                run: task_or("lint", "deno lint"),
                 inputs: Some(inputs),
                 outputs: None,
             },
         ]
     }
+}
+
+/// Parse `deno.json` (then `deno.jsonc`). Best-effort: an unreadable or
+/// malformed config yields `None` so the rest of the adapter keeps
+/// working rather than erroring the whole plan.
+fn read_deno_config(dir: &Path) -> Option<serde_json::Value> {
+    for file in ["deno.json", "deno.jsonc"] {
+        let path = dir.join(file);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str(&strip_jsonc_comments(&raw)) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn declared_tasks(dir: &Path) -> Vec<String> {
+    read_deno_config(dir)
+        .as_ref()
+        .and_then(|v| v.get("tasks"))
+        .and_then(|t| t.as_object())
+        .map(|t| t.keys().map(|k| k.trim().to_string()).collect())
+        .unwrap_or_default()
 }
 
 /// Very small JSONC stripper: drops `//`-to-EOL and `/* … */` comments.
@@ -272,10 +312,48 @@ mod tests {
 
     #[test]
     fn default_tasks_use_deno_commands() {
-        let tasks = DenoAdapter.default_tasks(Path::new("."));
+        let tmp = tmp_with(&[("deno.json", "{}")]);
+        let tasks = DenoAdapter.default_tasks(tmp.path());
         assert_eq!(tasks[0].name, "build");
-        assert!(tasks[0].run.contains("deno"));
+        // No `||`: a failing build must fail the task, not fall through
+        // to a type-check that passes.
+        assert_eq!(tasks[0].run, "deno check .");
         assert_eq!(tasks[1].run, "deno test --allow-read");
         assert_eq!(tasks[2].run, "deno lint");
+    }
+
+    #[test]
+    fn default_tasks_prefer_tasks_declared_in_deno_json() {
+        let tmp = tmp_with(&[(
+            "deno.json",
+            r#"{"tasks": {"build": "deno bundle main.ts", "lint": "deno lint --rules"}}"#,
+        )]);
+        let tasks = DenoAdapter.default_tasks(tmp.path());
+        assert_eq!(tasks[0].run, "deno task build");
+        assert_eq!(tasks[1].run, "deno test --allow-read");
+        assert_eq!(tasks[2].run, "deno task lint");
+    }
+
+    #[test]
+    fn detected_tasks_mirror_deno_json_tasks() {
+        let tmp = tmp_with(&[(
+            "deno.jsonc",
+            r#"{
+                // the project's own wiring
+                "tasks": {"build": "deno check main.ts", "dev": "deno run -A main.ts"}
+            }"#,
+        )]);
+        let mut tasks = DenoAdapter.detected_tasks(tmp.path()).unwrap();
+        tasks.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].name, "build");
+        assert_eq!(tasks[0].run, "deno task build");
+        assert_eq!(tasks[1].run, "deno task dev");
+    }
+
+    #[test]
+    fn detected_tasks_none_without_a_tasks_block() {
+        let tmp = tmp_with(&[("deno.json", r#"{"name": "x"}"#)]);
+        assert!(DenoAdapter.detected_tasks(tmp.path()).is_none());
     }
 }
