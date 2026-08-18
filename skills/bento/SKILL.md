@@ -75,7 +75,7 @@ Easiest path: `bento mcp install`. With no arguments it auto-detects every insta
 | Health check + cloud probes (JWT, cache.bento.build, api.bento.build) | `bento doctor --cloud` |
 | Scaffold a new dish | `bento dish add <path> --lang <ecosystem>` |
 | Create a new bento (deployment unit) | `bento box add <name>` |
-| Cache management | `bento cache stats|clear|push|pull` |
+| Cache management | `bento cache stats|clear|prune|push|pull` |
 | Manage deploy-target secrets (Cloudflare / Railway) | `bento secret put|list|delete <target> <name>` |
 | Toolchain management | `bento toolchain list|install|pin <tool=ver>` |
 | Cut a release (bump workspace version, refresh lockfile, commit, tag) | `bento release <patch|minor|major|X.Y.Z>` |

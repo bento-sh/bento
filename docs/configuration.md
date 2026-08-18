@@ -48,9 +48,11 @@ remote_region = "us-east-1"
 # remote = "bento://cache.bento.build"
 # remote_token_env = "BENTO_CACHE_TOKEN"   # env var holding the JWT
 # Credential resolution: env var first, then the OS keychain entry
-# written by `bento login`, then ~/.bento/credentials (0600) as a
-# headless fallback. Run `bento login` once for interactive setup;
-# use $BENTO_CACHE_TOKEN in CI.
+# written by `bento login`, then ~/.bento/credentials (0600). Run
+# `bento login` once for interactive setup; use $BENTO_CACHE_TOKEN in CI.
+#
+# Local-tier size is bounded by hand, not by config:
+#   bento cache prune --max-size 5GiB --older-than 30d
 
 [telemetry]
 # Build reports — sent only to the `bento://` cache remote configured
@@ -104,7 +106,29 @@ allowlist = ["erlang", "elixir"]
 | `remote` | string | unset | Remote cache URL. Two schemes: `s3://<bucket>/<optional/prefix>` (any AWS-signed object store), or `bento://<host>[/<prefix>]` (JWT-auth'd HTTP cache — `bento://cache.bento.build` for the hosted service). See README's "Caching" section. |
 | `remote_region` | string | `"us-east-1"` | AWS region for the bucket. S3 scheme only. |
 | `remote_endpoint` | string | unset | Custom S3-compatible endpoint URL. Required for non-AWS services (Cloudflare R2, MinIO, Backblaze B2); omit for native AWS S3. S3 scheme only. |
-| `remote_token_env` | string | `"BENTO_CACHE_TOKEN"` | Name of the env var holding the JWT, for the `bento://` scheme. Resolver walks env var → OS keychain entry `("bento", "cache-token")` (populated by `bento login`) → `~/.bento/credentials` (0600 fallback). Bento never stores the token in repo state. |
+| `remote_token_env` | string | `"BENTO_CACHE_TOKEN"` | Name of the env var holding the JWT, for the `bento://` scheme. Resolver walks env var → OS keychain entry `("bento", "cache-token")` (populated by `bento login`) → `~/.bento/credentials` (0600). Bento never stores the token in repo state. |
+
+The local tier has no size cap in config — an unbounded budget is the
+right default for a content-addressed cache, and a wrong number in a
+committed file is worse than none. Bound it per-machine instead:
+
+```bash
+bento cache stats                                  # entries, bytes, age range
+bento cache prune --max-size 5GiB                  # evict oldest until under
+bento cache prune --older-than 30d                 # evict anything staler
+bento cache prune --max-size 5GiB --older-than 30d # both bounds hold after
+```
+
+Eviction is oldest-first by mtime, and each bundle's `bento why`
+manifest goes with it. At least one bound is required; `bento cache
+clear` is the unbounded version. Sizes take binary suffixes
+(`B`/`KB`/`MB`/`GB`/`TB`, 1 KB = 1024 B); ages take `s`/`m`/`h`/`d`/`w`.
+
+On Linux the 0600 credentials file is always written, keychain or not:
+the only keyring backend bento builds there is kernel keyutils, whose
+entries live in the login session and are gone after a logout or
+reboot. macOS Keychain and Windows Credential Manager are durable and
+remain the primary sink there.
 
 ### `[telemetry]`
 

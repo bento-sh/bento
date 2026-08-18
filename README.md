@@ -170,7 +170,7 @@ A minimal workspace needs just one `bentos/<name>.toml` and one `dish.toml`. Def
 | `bento graph [bento]` | Print the dependency graph (ASCII or DOT) |
 | `bento doctor` | Health check: config, toolchains, cache, git, remotes |
 | `bento artifacts` | List resolved output paths per dish (post-build) |
-| `bento cache stats \| clear \| push \| pull` | Inspect, clear, or sync cache tiers |
+| `bento cache stats \| clear \| prune \| push \| pull` | Inspect, clear, bound, or sync cache tiers |
 | `bento toolchain list \| install \| pin` | Manage pinned language toolchains |
 | `bento schema [target]` | Emit JSON Schema for any agent-consumable output type |
 
@@ -459,7 +459,9 @@ files, lockfiles, env var values, adapter + toolchain (declared *and*
 resolved), the `bento` version. Three tiers:
 
 - **Local** (default). On disk at `~/.bento/cache`. Nothing to configure.
-  Inspect with `bento cache stats`; reset with `bento cache clear`.
+  Inspect with `bento cache stats`; reset with `bento cache clear`. To
+  keep it bounded without going cold, `bento cache prune --max-size 5GiB`
+  and/or `--older-than 30d` evict oldest-first until both bounds hold.
 
 - **GitHub Actions.** The composite action wraps `~/.bento/cache` with
   `actions/cache@v4`, scoped per-branch via the standard GHA cache API.
@@ -498,8 +500,9 @@ resolved), the `bento` version. Three tiers:
 
   Resolution order for reads: `$BENTO_CACHE_TOKEN` → OS keychain
   (`bento` / `cache-token`, written by `bento login`) →
-  `~/.bento/credentials` (0600 fallback for headless/keychain-less
-  environments). First non-empty wins.
+  `~/.bento/credentials` (0600 file). First non-empty wins. On Linux the
+  file is always written — the only keyring backend there is kernel
+  keyutils, whose entries die with the login session.
 
   `bento cache push` / `bento cache pull` do bulk sync between tiers on
   either scheme.
