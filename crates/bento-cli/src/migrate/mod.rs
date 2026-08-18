@@ -253,61 +253,9 @@ pub fn parse_jsonc_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> 
     let body = fs::read_to_string(path).with_context(|| format!("opening {}", path.display()))?;
     match serde_json::from_str::<T>(&body) {
         Ok(parsed) => Ok(parsed),
-        Err(strict_err) => serde_json::from_str(&strip_jsonc_comments(&body))
+        Err(strict_err) => serde_json::from_str(&crate::jsonc::strip_comments(&body))
             .with_context(|| format!("parsing {} as JSON ({strict_err})", path.display())),
     }
-}
-
-/// Strip `//` line and `/* */` block comments outside string literals.
-/// Newlines inside block comments are preserved so error line numbers
-/// still line up with the source file.
-fn strip_jsonc_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.char_indices().peekable();
-    let mut in_str = false;
-    let mut escape = false;
-    while let Some((_, c)) = chars.next() {
-        if in_str {
-            out.push(c);
-            if escape {
-                escape = false;
-            } else if c == '\\' {
-                escape = true;
-            } else if c == '"' {
-                in_str = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_str = true;
-                out.push(c);
-            }
-            '/' if matches!(chars.peek(), Some((_, '/'))) => {
-                for (_, c) in chars.by_ref() {
-                    if c == '\n' {
-                        out.push('\n');
-                        break;
-                    }
-                }
-            }
-            '/' if matches!(chars.peek(), Some((_, '*'))) => {
-                chars.next();
-                let mut prev = '\0';
-                for (_, c) in chars.by_ref() {
-                    if c == '\n' {
-                        out.push('\n');
-                    }
-                    if prev == '*' && c == '/' {
-                        break;
-                    }
-                    prev = c;
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// `package.json` subset every node-family migrator needs.
@@ -545,7 +493,8 @@ mod tests {
             "a": 1, // trailing
             "b": "https://example.com//x", /* inline */ "c": "/* not a comment */"
         }"#;
-        let v: serde_json::Value = serde_json::from_str(&strip_jsonc_comments(src)).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&crate::jsonc::strip_comments(src)).unwrap();
         assert_eq!(v["a"], 1);
         assert_eq!(v["b"], "https://example.com//x");
         assert_eq!(v["c"], "/* not a comment */");
@@ -553,7 +502,7 @@ mod tests {
 
     #[test]
     fn jsonc_keeps_line_numbers_across_block_comments() {
-        let stripped = strip_jsonc_comments("{\n/* a\nb\nc */\n}");
+        let stripped = crate::jsonc::strip_comments("{\n/* a\nb\nc */\n}");
         assert_eq!(stripped.lines().count(), 5);
     }
 
