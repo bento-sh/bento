@@ -457,9 +457,18 @@ fn write_bundle<W: Write>(
     Ok(())
 }
 
+/// Dirs never worth descending on the output walk unless a glob names
+/// one. They're the three biggest file-count sinks in a working tree and
+/// none of them is a build output anybody declares by accident.
+const UNLIKELY_OUTPUT_DIRS: [&str; 3] = ["node_modules", ".git", "target"];
+
 /// Walk `root`, match files against `globs`, and archive matches under
 /// `<archive_prefix>/<rel>` in `tar`. A no-op when `globs` is empty, so
 /// callers can invoke unconditionally without dispatching on opt-in.
+///
+/// Walks from each glob's literal prefix rather than from `root`: an
+/// `outputs = ["dist/**"]` dish shouldn't pay to stat `node_modules` on
+/// every put.
 fn bundle_tree<W: Write>(
     tar: &mut tar::Builder<W>,
     root: &Path,
@@ -470,22 +479,81 @@ fn bundle_tree<W: Write>(
         return Ok(());
     }
     let matcher = build_matcher(globs)?;
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
+    let skip: Vec<&str> = UNLIKELY_OUTPUT_DIRS
+        .into_iter()
+        .filter(|d| !globs.iter().any(|g| g.split('/').any(|part| part == *d)))
+        .collect();
+
+    let mut seen = std::collections::HashSet::new();
+    for start in walk_roots(globs) {
+        let from = root.join(&start);
+        if !from.exists() {
             continue;
         }
-        let full = entry.path();
-        let rel = match full.strip_prefix(root) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        if matcher.is_match(rel) {
-            let archive_name = PathBuf::from(archive_prefix).join(rel);
-            tar.append_path_with_name(full, archive_name)?;
+        let walk = walkdir::WalkDir::new(&from)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                e.depth() == 0
+                    || !e.file_type().is_dir()
+                    || !e
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| skip.contains(&name))
+            })
+            .filter_map(|r| match r {
+                Ok(e) => Some(e),
+                // One unreadable path shouldn't cost the whole cache
+                // entry — a stale symlink or a permission hole in the
+                // output tree is the user's problem, not a build failure.
+                Err(e) => {
+                    tracing::warn!("skipping unreadable path while bundling outputs: {e}");
+                    None
+                }
+            });
+
+        for entry in walk {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let full = entry.path();
+            let Ok(rel) = full.strip_prefix(root) else {
+                continue;
+            };
+            // Overlapping globs ("dist/**" and "dist/app.js") give
+            // overlapping walk roots; tar would happily hold both copies.
+            if matcher.is_match(rel) && seen.insert(rel.to_path_buf()) {
+                let archive_name = PathBuf::from(archive_prefix).join(rel);
+                tar.append_path_with_name(full, archive_name)?;
+            }
         }
     }
     Ok(())
+}
+
+/// Deepest wildcard-free directory prefix of each glob — the subtree
+/// that could possibly match it. `dist/**` → `dist`; `**/*.js` → `` (the
+/// whole tree, no saving available).
+fn walk_roots(globs: &[String]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = globs
+        .iter()
+        .map(|g| {
+            g.split('/')
+                .take_while(|part| !part.contains(['*', '?', '[', '{']))
+                .collect::<PathBuf>()
+        })
+        .collect();
+    roots.sort();
+    // Sorted, so a root always precedes anything nested under it — and
+    // walking the ancestor already covers the descendant.
+    let mut deduped: Vec<PathBuf> = Vec::with_capacity(roots.len());
+    for root in roots {
+        if deduped.last().is_some_and(|prev| root.starts_with(prev)) {
+            continue;
+        }
+        deduped.push(root);
+    }
+    deduped
 }
 
 fn append_bytes<W: Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
@@ -979,6 +1047,105 @@ mod tests {
             )
             .unwrap();
         key
+    }
+
+    #[test]
+    fn walk_roots_are_the_literal_prefixes_minus_nested_ones() {
+        let roots = |globs: &[&str]| {
+            walk_roots(&globs.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(roots(&["dist/**"]), ["dist"]);
+        assert_eq!(roots(&["target/release/foo"]), ["target/release/foo"]);
+        assert_eq!(roots(&["dist/**", "build/*.js"]), ["build", "dist"]);
+        // A wildcard in the first segment means no saving is available.
+        assert_eq!(roots(&["**/*.js"]), [""]);
+        assert_eq!(roots(&["**/*.js", "dist/**"]), [""]);
+        // Nested prefixes collapse into their ancestor.
+        assert_eq!(roots(&["dist/**", "dist/app.js"]), ["dist"]);
+        // Sibling dirs with a shared string prefix are NOT nested.
+        assert_eq!(roots(&["dist/**", "dist-old/**"]), ["dist", "dist-old"]);
+    }
+
+    #[test]
+    fn output_walk_skips_noise_dirs_but_not_when_a_glob_names_one() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        let dish = make_dish(&[
+            ("dist/app.js", b"built"),
+            ("node_modules/dep/index.js", b"vendored"),
+            ("target/debug/thing", b"compiled"),
+            (".git/HEAD", b"ref: x"),
+        ]);
+
+        // `**` would match everything, but the noise dirs are pruned.
+        let key = make_key("noise");
+        local
+            .put(
+                &key,
+                dish.path(),
+                &["**".into()],
+                None,
+                &[],
+                &TaskResult::default(),
+            )
+            .unwrap();
+        let restore = tempfile::tempdir().unwrap();
+        local.get(&key, restore.path(), None).unwrap().unwrap();
+        assert!(restore.path().join("dist/app.js").exists());
+        assert!(!restore.path().join("node_modules").exists());
+        assert!(!restore.path().join("target").exists());
+        assert!(!restore.path().join(".git").exists());
+
+        // Naming one opts back in — cargo dishes really do declare
+        // `target/...` as an output.
+        let key = make_key("named");
+        local
+            .put(
+                &key,
+                dish.path(),
+                &["target/debug/thing".into()],
+                None,
+                &[],
+                &TaskResult::default(),
+            )
+            .unwrap();
+        let restore = tempfile::tempdir().unwrap();
+        local.get(&key, restore.path(), None).unwrap().unwrap();
+        assert!(restore.path().join("target/debug/thing").exists());
+    }
+
+    #[test]
+    fn overlapping_globs_archive_each_file_once() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        let dish = make_dish(&[("dist/app.js", b"built")]);
+        let key = make_key("overlap");
+
+        local
+            .put(
+                &key,
+                dish.path(),
+                &["dist/**".into(), "dist/app.js".into()],
+                None,
+                &[],
+                &TaskResult::default(),
+            )
+            .unwrap();
+
+        let mut archive = tar::Archive::new(File::open(local.bundle_path(&key)).unwrap());
+        let names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names.iter().filter(|n| *n == "outputs/dist/app.js").count(),
+            1,
+            "{names:?}"
+        );
     }
 
     #[test]
