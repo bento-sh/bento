@@ -9,7 +9,7 @@ name: action-selftest
 # Strategy:
 #
 #   smoke-binary  Tests the hot path consumers will hit:
-#                 `uses: bento-sh/bento@v0.1` + `version: 0.1.0` —
+#                 `uses: bento-sh/bento@v0.1` + `version: 0.1.2` —
 #                 downloads the prebuilt release tarball, restores
 #                 cache, runs `bento ci` against a fixture workspace.
 #                 Matrix: ubuntu + macOS.
@@ -75,10 +75,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Run actionlint
-        run: |
-          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color .github/workflows/*.yml
+      # Was `curl .../main/download-actionlint.bash | bash` — an
+      # unpinned script from a moving branch, executed on a runner that
+      # holds this repo's token. The published image, pinned by digest,
+      # is the same tool with none of that.
+      - uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
+        with:
+          args: -color
 
   smoke-binary:
     name: smoke (binary, ${{ matrix.os }})
@@ -109,7 +112,7 @@ jobs:
         id: bento
         uses: ./
         with:
-          version: '0.1.0'
+          version: '0.1.2'
           workspace-path: tests/e2e/fixtures/monorepo-go-node
           # `task: build` instead of `ci` — the fixture's `lint` task
           # calls `golangci-lint`, which isn't on stock GitHub runners
