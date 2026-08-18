@@ -125,6 +125,10 @@ impl LanguageAdapter for YarnAdapter {
         detected_npm_scripts(dir, "yarn")
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        crate::node_common::node_derived_paths()
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
         let inputs = base_inputs("yarn.lock");
         vec![

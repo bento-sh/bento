@@ -349,6 +349,32 @@ pub struct Task {
     /// as `flaky: true` in the execution report.
     #[serde(default)]
     pub retry: u32,
+    /// Include a custom-named task in `bento ci`. Lifecycle names
+    /// (`build` / `check` / `test` / `lint`) always run; anything else
+    /// is `bento run`-only unless it opts in here — so a `dev` or
+    /// `deploy-db` script mirrored from `package.json` never runs in CI
+    /// by accident.
+    #[serde(default)]
+    pub ci: bool,
+    /// `false` = always run, never restore from cache (non-deterministic
+    /// or side-effectful commands). Same as Turborepo's `cache: false`.
+    #[serde(default = "default_true")]
+    pub cache: bool,
+}
+
+impl Default for Task {
+    fn default() -> Self {
+        Self {
+            run: None,
+            inputs: None,
+            outputs: None,
+            workspace_outputs: None,
+            env: Vec::new(),
+            retry: 0,
+            ci: false,
+            cache: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

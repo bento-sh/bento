@@ -141,6 +141,7 @@ impl BentoServer {
             dish_filter,
             no_cache: input.no_cache.unwrap_or(false),
             since: input.since,
+            ..Default::default()
         };
         let plan = bento_core::plan_at(&root, &opts).map_err(tool_error_from_anyhow)?;
         let value = serde_json::to_value(&plan).map_err(tool_error_from_json)?;

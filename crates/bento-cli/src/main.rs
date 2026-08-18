@@ -211,6 +211,7 @@ fn run_plan(global: &GlobalFlags, target: Option<String>) -> anyhow::Result<()> 
         dish_filter,
         no_cache: global.no_cache,
         since: global.since.clone(),
+        ..Default::default()
     };
     let plan = plan_at(&root, &opts)?;
     if global.json {

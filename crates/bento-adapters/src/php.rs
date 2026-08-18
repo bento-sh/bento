@@ -107,6 +107,12 @@ impl LanguageAdapter for PhpAdapter {
         detected_composer_scripts(dir)
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        // `composer install` output; also the build task's declared
+        // outputs, but test/lint must not hash it either.
+        vec!["vendor/**".into()]
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
         let inputs = vec![
             "**/*.php".into(),

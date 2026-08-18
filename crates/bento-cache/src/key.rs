@@ -41,7 +41,7 @@ pub struct Hasher {
 }
 
 impl Hasher {
-    const FORMAT_TAG: &'static [u8] = b"bento-cas-v1\0";
+    const FORMAT_TAG: &'static [u8] = b"bento-cas-v2\0";
 
     pub fn new() -> Self {
         let mut inner = blake3::Hasher::new();

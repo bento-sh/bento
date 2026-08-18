@@ -26,7 +26,7 @@ const NOISE_DIRS: &[&str] = &[
     ".next",
 ];
 
-fn is_noise_dir(name: &str) -> bool {
+pub(crate) fn is_noise_dir(name: &str) -> bool {
     NOISE_DIRS.contains(&name)
 }
 

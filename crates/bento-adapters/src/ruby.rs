@@ -43,16 +43,10 @@ impl LanguageAdapter for RubyAdapter {
     }
 
     fn derived_paths(&self) -> Vec<String> {
-        // `bundle install` writes Gemfile.lock and, when `bundle config
-        // set path vendor/bundle` is active, populates vendor/bundle/.
-        // `.bundle/config` may also be written by `bundle config`. None
-        // of these should contribute to task cache keys: they're
-        // derived state, reproducible from the Gemfile + ruby version.
-        vec![
-            "Gemfile.lock".into(),
-            ".bundle/**".into(),
-            "vendor/bundle/**".into(),
-        ]
+        // `Gemfile.lock` is committed and pins every gem version — it
+        // must stay in the key (a `bundle update` with an unchanged
+        // Gemfile is a real change). Only install side effects go here.
+        vec![".bundle/**".into(), "vendor/bundle/**".into()]
     }
 
     fn required_toolchain(&self, dir: &Path) -> Result<Option<ToolVersion>> {

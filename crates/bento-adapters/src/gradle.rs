@@ -129,16 +129,14 @@ impl LanguageAdapter for GradleAdapter {
         }
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        vec![".gradle/**".into(), "build/**".into()]
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
-        let inputs = vec![
-            "src/**".into(),
-            "build.gradle".into(),
-            "build.gradle.kts".into(),
-            "settings.gradle".into(),
-            "settings.gradle.kts".into(),
-            "gradle.properties".into(),
-            "gradle/libs.versions.toml".into(),
-        ];
+        // Whole tree so a multi-project root dish sees every
+        // subproject's `src/`; `build/` is pruned, `.gradle/` derived.
+        let inputs = vec!["**".into()];
 
         vec![
             DefaultTask {

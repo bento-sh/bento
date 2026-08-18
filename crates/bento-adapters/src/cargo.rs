@@ -138,16 +138,15 @@ impl LanguageAdapter for CargoAdapter {
         }
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        vec!["target/**".into()]
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
-        let inputs = vec![
-            "src/**".into(),
-            "benches/**".into(),
-            "examples/**".into(),
-            "tests/**".into(),
-            "build.rs".into(),
-            "Cargo.toml".into(),
-            "Cargo.lock".into(),
-        ];
+        // Whole tree: a workspace-root dish must see `crates/*/src`, and
+        // `.cargo/config.toml` / `rust-toolchain.toml` / `build.rs`
+        // siblings all shape the build. `target/` is derived (above).
+        let inputs = vec!["**".into()];
 
         vec![
             DefaultTask {
@@ -175,12 +174,7 @@ impl LanguageAdapter for CargoAdapter {
             DefaultTask {
                 name: "lint".into(),
                 run: "cargo clippy --locked --all-targets -- -D warnings".into(),
-                inputs: Some({
-                    let mut v = inputs;
-                    v.push("clippy.toml".into());
-                    v.push(".clippy.toml".into());
-                    v
-                }),
+                inputs: Some(inputs),
                 outputs: None,
             },
         ]
@@ -322,10 +316,19 @@ version = "0"
     }
 
     #[test]
-    fn lint_inputs_include_clippy_config() {
+    fn inputs_cover_whole_tree_and_target_is_derived() {
         let tasks = CargoAdapter.default_tasks();
-        let lint = tasks.iter().find(|t| t.name == "lint").unwrap();
-        let inputs = lint.inputs.as_ref().unwrap();
-        assert!(inputs.iter().any(|i| i == "clippy.toml"));
+        for t in &tasks {
+            assert_eq!(
+                t.inputs.as_deref(),
+                Some(&["**".to_string()][..]),
+                "{}",
+                t.name
+            );
+        }
+        assert!(CargoAdapter
+            .derived_paths()
+            .iter()
+            .any(|d| d == "target/**"));
     }
 }

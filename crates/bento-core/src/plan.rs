@@ -127,6 +127,9 @@ pub struct PlanOptions {
     /// Base ref for git-diff pre-filter. When set, dishes with no changed
     /// file since `since` are short-circuited to [`TaskStatus::SkippedDiffClean`].
     pub since: Option<String>,
+    /// Declared → source env-var aliases (see `CiOptions::secret_aliases`).
+    /// Keys hash the *source* value, so plan and ci agree.
+    pub env_aliases: BTreeMap<String, String>,
 }
 
 pub struct Planner {
@@ -262,7 +265,7 @@ impl Planner {
             // Nothing to plan, nothing to report — leave tasks empty.
         } else {
             let dep_mixins = crate::cascade::deps_for_key(dish, dep_sigs);
-            let image = container_image_for_plan(&self.workspace);
+            let container = crate::run::container_key(&self.workspace);
             // Track per-task keys as we walk so intra-dish task deps
             // (e.g. `railway:deploy` → `build`) can mix the dep's key
             // into the current task's hash. BTreeMap ordering means
@@ -278,15 +281,17 @@ impl Planner {
                     .iter()
                     .filter_map(|dep| computed_keys.get(dep).map(|k| (dep.as_str(), k.as_str())))
                     .collect();
-                let (key, _manifest) = compute_key(
-                    &loaded.dir,
-                    &dish.name,
+                let (key, _manifest) = compute_key(&KeyInputs {
+                    dish_dir: &loaded.dir,
+                    dish_name: &dish.name,
+                    dish_rel: &loaded.rel,
                     adapter,
                     task,
-                    &dep_mixins,
-                    image.as_deref(),
-                    &task_dep_keys,
-                )?;
+                    dep_signatures: &dep_mixins,
+                    container: container.as_deref(),
+                    task_dep_keys: &task_dep_keys,
+                    env_aliases: &opts.env_aliases,
+                })?;
                 computed_keys.insert(task.name.clone(), key.as_hex().to_string());
                 let (status, miss_reason) = if is_clean {
                     (TaskStatus::SkippedDiffClean, None)
@@ -388,23 +393,6 @@ pub(crate) fn resolve_tasks(
 ) -> Result<Vec<ResolvedTask>> {
     let mut out: BTreeMap<String, ResolvedTask> = BTreeMap::new();
 
-    // Surface the dish-level `inputs` shadowing footgun before any
-    // tasks are resolved — adapters that ship their own `default.inputs`
-    // silently override anything declared at the dish root, so the user
-    // never sees their globs land in the cache key. See plan.rs tests
-    // `dish_inputs_shadowed_by_adapter_defaults_*` for the resolution
-    // behaviour this warns about.
-    let shadowed = shadowed_dish_inputs(dish, adapter);
-    if !shadowed.is_empty() {
-        tracing::warn!(
-            dish = %dish.name,
-            tasks = ?shadowed,
-            "dish-level `inputs` are silently overridden by adapter defaults for these tasks; \
-             declare `inputs = [...]` under each `[tasks.<name>]` block (or remove the dish-level \
-             `inputs` field) — see docs/configuration.md § [tasks.<name>]"
-        );
-    }
-
     if let Some(a) = adapter {
         for default in a.default_tasks() {
             out.insert(default.name.clone(), resolved_from_default(default, dish));
@@ -490,6 +478,7 @@ pub(crate) fn resolve_tasks(
                 )
             })
             .unwrap_or_default();
+        let no_cache = no_cache || !task.cache;
         // `inputs` / `outputs` inherit from the existing entry (adapter
         // default, integration task) when the user omits them. Same
         // partial-override principle as `run`: a dish that writes
@@ -522,6 +511,13 @@ pub(crate) fn resolve_tasks(
                 );
             }
         };
+        // Custom-named tasks (`dev`, `migrate`, package.json scripts
+        // mirrored by `bento init`) are `bento run`-only unless they
+        // opt in with `ci = true` — otherwise `bento ci` would spawn
+        // `npm run dev` and never return.
+        if existing.is_none() && !is_lifecycle_task(name) && !task.ci {
+            continue;
+        }
         // `workspace_outputs` is opt-in per user Task. Inherit from the
         // existing entry when the user doesn't set it (no adapter ships
         // defaults today, but garnish / integration sources could in
@@ -550,7 +546,29 @@ pub(crate) fn resolve_tasks(
         );
     }
 
-    Ok(out.into_values().collect())
+    let mut tasks: Vec<ResolvedTask> = out.into_values().collect();
+    for t in &mut tasks {
+        // `outputs = ["dist/"]` is a globset literal that matches no
+        // file — the bundle would be empty and every later hit would
+        // restore nothing. Treat a trailing slash as "the whole dir".
+        for o in t.outputs.iter_mut().chain(t.workspace_outputs.iter_mut()) {
+            if o.ends_with('/') {
+                o.push_str("**");
+            }
+        }
+        // A cacheable task that hashes nothing (no adapter, no inputs)
+        // has a constant key: it would run once and hit forever.
+        if !t.no_cache && adapter.is_none() && t.inputs.is_empty() && t.depends_on.is_empty() {
+            t.no_cache = true;
+        }
+    }
+    Ok(tasks)
+}
+
+pub const LIFECYCLE_TASKS: &[&str] = &["build", "check", "test", "lint"];
+
+pub fn is_lifecycle_task(name: &str) -> bool {
+    LIFECYCLE_TASKS.contains(&name)
 }
 
 pub(crate) fn resolve_integrations<'a>(
@@ -575,29 +593,15 @@ pub(crate) fn resolve_integrations<'a>(
     out
 }
 
-/// Names of tasks where dish-level `inputs` are silently shadowed by
-/// adapter-default `inputs`. Empty when `dish.inputs` is empty, when
-/// no adapter is detected, or when no adapter-default task ships its
-/// own `inputs`.
-pub(crate) fn shadowed_dish_inputs(
-    dish: &DishConfig,
-    adapter: Option<&dyn LanguageAdapter>,
-) -> Vec<String> {
-    if dish.inputs.is_empty() {
-        return Vec::new();
-    }
-    let Some(a) = adapter else {
-        return Vec::new();
-    };
-    a.default_tasks()
-        .into_iter()
-        .filter(|d| d.inputs.is_some())
-        .map(|d| d.name)
-        .collect()
-}
-
 fn resolved_from_default(default: DefaultTask, dish: &DishConfig) -> ResolvedTask {
-    let inputs = default.inputs.unwrap_or_else(|| dish.inputs.clone());
+    // Dish-level `inputs` always feed the key: union with the adapter's
+    // defaults rather than letting one silently shadow the other.
+    let mut inputs = default.inputs.unwrap_or_default();
+    for g in &dish.inputs {
+        if !inputs.contains(g) {
+            inputs.push(g.clone());
+        }
+    }
     let outputs = default.outputs.unwrap_or_else(|| dish.outputs.clone());
     ResolvedTask {
         name: default.name,
@@ -689,27 +693,53 @@ pub(crate) fn host_triple() -> String {
     format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
 }
 
-pub(crate) fn compute_key(
-    dish_dir: &Path,
-    dish_name: &str,
-    adapter: Option<&dyn LanguageAdapter>,
-    task: &ResolvedTask,
-    dep_signatures: &[(&str, &crate::cascade::DishSig)],
-    container_image: Option<&str>,
-    task_dep_keys: &[(&str, &str)],
-) -> Result<(CacheKey, InputManifest)> {
+/// Everything that feeds one task's cache key. Struct rather than
+/// positional args so a new input can't be silently dropped at one of
+/// the call sites.
+pub(crate) struct KeyInputs<'a> {
+    pub dish_dir: &'a Path,
+    pub dish_name: &'a str,
+    /// Workspace-relative dish path — keeps content-identical dishes
+    /// on distinct keys (distinct bundles, distinct `bento why`).
+    pub dish_rel: &'a Path,
+    pub adapter: Option<&'a dyn LanguageAdapter>,
+    pub task: &'a ResolvedTask,
+    pub dep_signatures: &'a [(&'a str, &'a crate::cascade::DishSig)],
+    /// Resolved container plan (`runtime image`) or `None` for native —
+    /// what will *actually* run, not what config asked for.
+    pub container: Option<&'a str>,
+    pub task_dep_keys: &'a [(&'a str, &'a str)],
+    /// Declared → source env-var aliases; the *source* value is hashed
+    /// because that's what the child process sees.
+    pub env_aliases: &'a BTreeMap<String, String>,
+}
+
+pub(crate) fn compute_key(input: &KeyInputs<'_>) -> Result<(CacheKey, InputManifest)> {
+    let KeyInputs {
+        dish_dir,
+        dish_name,
+        dish_rel,
+        adapter,
+        task,
+        dep_signatures,
+        container,
+        task_dep_keys,
+        env_aliases,
+    } = *input;
     let mut hasher = Hasher::new();
     let bento_version = bento_version_major_minor();
     let host = host_triple();
     hasher.add_extra("bento_version", &bento_version);
     hasher.add_extra("host", &host);
+    hasher.add_extra("dish", &dish_rel.to_string_lossy());
     hasher.add_extra("task_name", &task.name);
     hasher.add_extra("task_command", &task.run);
-    if let Some(img) = container_image {
-        // Image ref covers digest + tag; when the user flips from a
-        // tag like `debian:12` to a digest-pinned reference the key
-        // naturally changes.
-        hasher.add_extra("container_image", img);
+    // Output globs shape what the bundle contains; a task that gains
+    // `build/**` must not restore an older bundle that lacks it.
+    hasher.add_extra("outputs", &task.outputs.join("\n"));
+    hasher.add_extra("workspace_outputs", &task.workspace_outputs.join("\n"));
+    if let Some(c) = container {
+        hasher.add_extra("container", c);
     }
 
     let mut adapter_id: Option<String> = None;
@@ -734,8 +764,11 @@ pub(crate) fn compute_key(
         }
     }
 
-    for name in &task.env {
-        let value = std::env::var(name).unwrap_or_default();
+    let mut env_names: Vec<&String> = task.env.iter().collect();
+    env_names.sort();
+    for name in env_names {
+        let source = env_aliases.get(name).map(String::as_str).unwrap_or(name);
+        let value = std::env::var(source).unwrap_or_default();
         hasher.add_extra(&format!("env:{name}"), &value);
     }
 
@@ -793,11 +826,23 @@ pub(crate) fn compute_key(
 
     if !globs.is_empty() && dish_dir.is_dir() {
         let matcher = build_matcher(&globs)?;
+        // A task's own outputs are never inputs — otherwise the key
+        // churns after every build. Same for the universal noise dirs.
+        let output_matcher = build_matcher(&task.outputs)?;
 
-        let mut matched: Vec<PathBuf> = Vec::new();
-        for entry in walkdir::WalkDir::new(dish_dir).follow_links(false) {
+        let mut matched: Vec<(PathBuf, bool)> = Vec::new();
+        let walker = walkdir::WalkDir::new(dish_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                e.depth() == 0
+                    || !(e.file_type().is_dir()
+                        && crate::discovery::is_noise_dir(&e.file_name().to_string_lossy()))
+            });
+        for entry in walker {
             let entry = entry?;
-            if !entry.file_type().is_file() {
+            let ft = entry.file_type();
+            if !(ft.is_file() || ft.is_symlink()) {
                 continue;
             }
             let rel = match entry.path().strip_prefix(dish_dir) {
@@ -809,16 +854,29 @@ pub(crate) fn compute_key(
                     continue;
                 }
             }
+            if output_matcher.is_match(&rel) {
+                continue;
+            }
             if matcher.is_match(&rel) {
-                matched.push(rel);
+                matched.push((rel, ft.is_symlink()));
             }
         }
         matched.sort();
 
-        for rel in matched {
+        for (rel, is_symlink) in matched {
             let full = dish_dir.join(&rel);
-            let content =
-                std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
+            // Symlinks hash by target path, not by pointee content —
+            // cheap, deterministic, and enough to invalidate when the
+            // link is repointed.
+            let content = if is_symlink {
+                std::fs::read_link(&full)
+                    .with_context(|| format!("reading link {}", full.display()))?
+                    .to_string_lossy()
+                    .into_owned()
+                    .into_bytes()
+            } else {
+                std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?
+            };
             let file_hash = blake3::hash(&content);
             hasher.add_file(&rel, &content);
             manifest_files.push(ManifestFile {
@@ -854,23 +912,6 @@ fn build_matcher(globs: &[String]) -> Result<globset::GlobSet> {
 }
 
 // ── Top-level entry points ─────────────────────────────────────────
-
-/// Peek the workspace's container-image config purely for cache-key
-/// purposes — we don't actually need a runtime here; we just want the
-/// string in the hash when the user has declared an image and opted
-/// into container execution.
-pub(crate) fn container_image_for_plan(workspace: &Workspace) -> Option<String> {
-    use bento_config::ContainerMode;
-    let exec = &workspace.repo.execution;
-    match exec.container {
-        ContainerMode::Never => None,
-        ContainerMode::Always => exec.image.clone(),
-        // In "auto" we assume the image fingerprint is relevant whenever
-        // one is declared — that matches how "auto" resolves at exec
-        // time (image + runtime ⇒ containerise).
-        ContainerMode::Auto => exec.image.clone(),
-    }
-}
 
 /// Returned when `find_workspace_root` walks to `/` without finding
 /// a `bento.toml` or `bentos/`. Downcast-friendly so the CLI can classify
@@ -1334,8 +1375,18 @@ dishes = ["apps/api"]"#,
             integration_kind: None,
             depends_on: vec![],
         };
-        let (_, manifest) = compute_key(&dish_dir, "sample-api", None, &resolved, &[], None, &[])
-            .expect("compute_key");
+        let (_, manifest) = compute_key(&KeyInputs {
+            dish_dir: &dish_dir,
+            dish_name: "sample-api",
+            dish_rel: Path::new("sample-api"),
+            adapter: None,
+            task: &resolved,
+            dep_signatures: &[],
+            container: None,
+            task_dep_keys: &[],
+            env_aliases: &BTreeMap::new(),
+        })
+        .expect("compute_key");
         assert_eq!(
             manifest.host.as_deref(),
             Some(host_triple().as_str()),
@@ -1417,6 +1468,8 @@ dishes = ["apps/api"]"#,
                         workspace_outputs: None,
                         env: vec![],
                         retry: 0,
+                        ci: false,
+                        cache: true,
                     },
                 ),
                 (
@@ -1428,6 +1481,8 @@ dishes = ["apps/api"]"#,
                         workspace_outputs: None,
                         env: vec![],
                         retry: 0,
+                        ci: false,
+                        cache: true,
                     },
                 ),
             ]
@@ -1447,7 +1502,8 @@ dishes = ["apps/api"]"#,
         assert_eq!(by_name["build"], "go build -tags custom ./...");
         assert_eq!(by_name["test"], "go test ./...");
         assert_eq!(by_name["lint"], "golangci-lint run");
-        assert_eq!(by_name["deploy"], "./deploy.sh");
+        // Custom-named, no `ci = true` → `bento run`-only.
+        assert!(!by_name.contains_key("deploy"));
     }
 
     #[test]
@@ -1469,6 +1525,8 @@ dishes = ["apps/api"]"#,
                     workspace_outputs: None,
                     env: vec![],
                     retry: 0,
+                    ci: false,
+                    cache: true,
                 },
             )]
             .into_iter()
@@ -1482,8 +1540,8 @@ dishes = ["apps/api"]"#,
         let build = resolved.iter().find(|t| t.name == "build").unwrap();
         // Inherited run from GoAdapter's default.
         assert_eq!(build.run, "go build ./...");
-        // User-declared outputs stick.
-        assert_eq!(build.outputs, vec!["bin/".to_string()]);
+        // User-declared outputs stick (trailing slash → dir glob).
+        assert_eq!(build.outputs, vec!["bin/**".to_string()]);
     }
 
     #[test]
@@ -1509,6 +1567,8 @@ dishes = ["apps/api"]"#,
                     workspace_outputs: Some(vec!["target/debug/ctrl-plane".into()]),
                     env: vec![],
                     retry: 0,
+                    ci: false,
+                    cache: true,
                 },
             )]
             .into_iter()
@@ -1523,13 +1583,8 @@ dishes = ["apps/api"]"#,
         // Adapter default inputs must survive the partial override —
         // the key point of this test.
         assert!(
-            build.inputs.iter().any(|g| g == "src/**"),
-            "src/** missing from resolved inputs: {:?}",
-            build.inputs
-        );
-        assert!(
-            build.inputs.iter().any(|g| g == "Cargo.toml"),
-            "Cargo.toml missing from resolved inputs: {:?}",
+            build.inputs.iter().any(|g| g == "**"),
+            "adapter default `**` missing from resolved inputs: {:?}",
             build.inputs
         );
         // User-declared workspace_outputs flows through.
@@ -1557,6 +1612,8 @@ dishes = ["apps/api"]"#,
                     workspace_outputs: Some(vec!["target/release/ctrl-plane".into()]),
                     env: vec![],
                     retry: 0,
+                    ci: false,
+                    cache: true,
                 },
             )]
             .into_iter()
@@ -1591,6 +1648,8 @@ dishes = ["apps/api"]"#,
                     workspace_outputs: None,
                     env: vec![],
                     retry: 0,
+                    ci: false,
+                    cache: true,
                 },
             )]
             .into_iter()
@@ -1758,6 +1817,8 @@ dishes = ["apps/api"]"#,
                 workspace_outputs: None,
                 env: vec![],
                 retry: 0,
+                ci: false,
+                cache: true,
             },
         );
         let dish = DishConfig {
@@ -1785,50 +1846,7 @@ dishes = ["apps/api"]"#,
     }
 
     #[test]
-    fn shadowed_dish_inputs_lists_adapter_defaults_with_inputs() {
-        // Cargo's adapter ships `inputs` on every default task — so a
-        // dish that writes `inputs = ["openapi.yaml"]` at the root has
-        // every lifecycle task's cache key silently miss the file.
-        let dish = bento_config::DishConfig {
-            name: "ctrl-plane".into(),
-            language: Some("cargo".into()),
-            inputs: vec!["openapi.yaml".into()],
-            ..Default::default()
-        };
-        let adapter = bento_adapters::CargoAdapter;
-        let mut shadowed = shadowed_dish_inputs(&dish, Some(&adapter));
-        shadowed.sort();
-        // Cargo ships build/check/test/lint with inputs.
-        assert_eq!(shadowed, vec!["build", "check", "lint", "test"]);
-    }
-
-    #[test]
-    fn shadowed_dish_inputs_empty_when_dish_inputs_empty() {
-        let dish = bento_config::DishConfig {
-            name: "api".into(),
-            language: Some("cargo".into()),
-            inputs: vec![],
-            ..Default::default()
-        };
-        let adapter = bento_adapters::CargoAdapter;
-        assert!(shadowed_dish_inputs(&dish, Some(&adapter)).is_empty());
-    }
-
-    #[test]
-    fn shadowed_dish_inputs_empty_when_no_adapter() {
-        let dish = bento_config::DishConfig {
-            name: "scripts".into(),
-            inputs: vec!["src/**".into()],
-            ..Default::default()
-        };
-        assert!(shadowed_dish_inputs(&dish, None).is_empty());
-    }
-
-    #[test]
-    fn dish_inputs_silently_dropped_for_adapter_default_tasks() {
-        // Regression coverage for the footgun the warn surfaces:
-        // dish.inputs = ["openapi.yaml"] does NOT land in cargo build's
-        // resolved inputs, even though the docs once promised it would.
+    fn dish_inputs_union_with_adapter_defaults() {
         let dish = bento_config::DishConfig {
             name: "ctrl-plane".into(),
             language: Some("cargo".into()),
@@ -1839,11 +1857,75 @@ dishes = ["apps/api"]"#,
         let tmp = tempfile::tempdir().unwrap();
         let resolved = resolve_tasks(tmp.path(), &dish, Some(&adapter), &[]).unwrap();
         let build = resolved.iter().find(|t| t.name == "build").unwrap();
-        assert!(
-            !build.inputs.iter().any(|g| g == "openapi.yaml"),
-            "dish-level `openapi.yaml` unexpectedly landed in cargo build inputs — \
-             behaviour changed; update warn + docs to match. inputs={:?}",
-            build.inputs
+        assert!(build.inputs.iter().any(|g| g == "openapi.yaml"));
+        assert!(build.inputs.iter().any(|g| g == "**"));
+    }
+
+    #[test]
+    fn custom_tasks_are_run_only_unless_ci_opt_in() {
+        let mut tasks = BTreeMap::new();
+        for (name, ci) in [("dev", false), ("e2e", true), ("test", false)] {
+            tasks.insert(
+                name.to_string(),
+                bento_config::Task {
+                    run: Some(format!("npm run {name}")),
+                    ci,
+                    ..Default::default()
+                },
+            );
+        }
+        let dish = bento_config::DishConfig {
+            name: "web".into(),
+            tasks,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_tasks(tmp.path(), &dish, None, &[]).unwrap();
+        let names: Vec<&str> = resolved.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["e2e", "test"]);
+    }
+
+    #[test]
+    fn trailing_slash_outputs_become_dir_globs_and_cache_false_disables_cache() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "build".to_string(),
+            bento_config::Task {
+                run: Some("make".into()),
+                inputs: Some(vec!["Makefile".into()]),
+                outputs: Some(vec!["dist/".into()]),
+                cache: false,
+                ..Default::default()
+            },
         );
+        let dish = bento_config::DishConfig {
+            name: "site".into(),
+            tasks,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_tasks(tmp.path(), &dish, None, &[]).unwrap();
+        assert_eq!(resolved[0].outputs, vec!["dist/**"]);
+        assert!(resolved[0].no_cache);
+    }
+
+    #[test]
+    fn zero_input_custom_task_is_uncacheable() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "build".to_string(),
+            bento_config::Task {
+                run: Some("make".into()),
+                ..Default::default()
+            },
+        );
+        let dish = bento_config::DishConfig {
+            name: "site".into(),
+            tasks,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_tasks(tmp.path(), &dish, None, &[]).unwrap();
+        assert!(resolved[0].no_cache);
     }
 }

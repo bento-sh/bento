@@ -272,17 +272,37 @@ pub fn detected_npm_scripts(dir: &Path, run_prefix: &str) -> Option<Vec<Detected
     Some(tasks)
 }
 
-/// Input globs every Node-family adapter uses for build/test/lint.
-pub fn base_inputs(lockfile: &str) -> Vec<String> {
-    vec![
-        "src/**".into(),
-        "public/**".into(),
-        "index.html".into(),
-        "package.json".into(),
-        lockfile.into(),
-        "tsconfig*.json".into(),
-        "vite.config.*".into(),
+/// Input globs every Node-family adapter uses for build/test/lint:
+/// the whole dish tree. Framework layouts (`app/`, `pages/`, `routes/`,
+/// root-level `next.config.*`) vary too much for an allowlist to be
+/// safe; the walker prunes `node_modules` and the derived dirs below.
+pub fn base_inputs(_lockfile: &str) -> Vec<String> {
+    vec!["**".into()]
+}
+
+/// Framework/tool output + cache dirs shared by every Node-family
+/// adapter. Never inputs, even for tasks that don't declare them as
+/// outputs.
+pub fn node_derived_paths() -> Vec<String> {
+    [
+        "node_modules/**",
+        "dist/**",
+        "build/**",
+        "out/**",
+        ".next/**",
+        ".nuxt/**",
+        ".output/**",
+        ".svelte-kit/**",
+        ".turbo/**",
+        ".cache/**",
+        ".parcel-cache/**",
+        ".eslintcache",
+        "coverage/**",
+        "storybook-static/**",
     ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 #[cfg(test)]

@@ -133,6 +133,10 @@ impl LanguageAdapter for BunAdapter {
         detected_npm_scripts(dir, "bun run")
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        crate::node_common::node_derived_paths()
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
         let mut inputs = base_inputs("bun.lock");
         inputs.push("bun.lockb".into());

@@ -24,7 +24,7 @@ use bento_config::{LoadedDish, Workspace};
 use bento_toolchain::{Installer, ResolutionSource, Resolver, Target};
 
 use crate::plan::{
-    compute_key, resolve_adapter, resolve_integrations, resolve_tasks, ResolvedTask,
+    compute_key, resolve_adapter, resolve_integrations, resolve_tasks, KeyInputs, ResolvedTask,
 };
 
 // ── Output types ───────────────────────────────────────────────────
@@ -767,7 +767,7 @@ impl Executor {
         // front beats one per task.
         let dep_mixins = crate::cascade::deps_for_key(&loaded.config, dep_sigs);
 
-        let container_image = crate::plan::container_image_for_plan(&self.workspace);
+        let container = container_key(&self.workspace);
 
         // Tracks computed keys within this dish so an integration task
         // with `depends_on = ["build"]` (railway:deploy, cloudflare
@@ -832,15 +832,17 @@ impl Executor {
                         .map(|k| (dep.as_str(), k.as_str()))
                 })
                 .collect();
-            let (key, manifest) = compute_key(
-                &loaded.dir,
-                &loaded.config.name,
+            let (key, manifest) = compute_key(&KeyInputs {
+                dish_dir: &loaded.dir,
+                dish_name: &loaded.config.name,
+                dish_rel: &loaded.rel,
                 adapter,
                 task,
-                &dep_mixins,
-                container_image.as_deref(),
-                &task_dep_keys,
-            )?;
+                dep_signatures: &dep_mixins,
+                container: container.as_deref(),
+                task_dep_keys: &task_dep_keys,
+                env_aliases: &opts.secret_aliases,
+            })?;
             computed_task_keys.insert(task.name.clone(), key.as_hex().to_string());
 
             // Skip-if-unchanged for Deploy / DeployPreview tasks.
@@ -1156,7 +1158,12 @@ impl Executor {
                     }
                     Ok(None) => { /* fall through */ }
                     Err(e) => {
-                        return TaskAttempt::failed_once(-1, format!("cache restore failed: {e}"));
+                        // A torn or hostile bundle must not wedge the
+                        // key forever: drop it and rebuild.
+                        tracing::warn!(
+                            "cache restore failed ({e}) — discarding bundle, rebuilding"
+                        );
+                        let _ = std::fs::remove_file(self.cache.bundle_path(key));
                     }
                 }
             }
@@ -2096,18 +2103,6 @@ impl TaskAttempt {
             output_excerpt: None,
         }
     }
-
-    fn failed_once(exit_code: i32, msg: String) -> Self {
-        Self {
-            outcome: TaskOutcome::Failed {
-                exit_code,
-                stderr_excerpt: msg,
-            },
-            attempts: 1,
-            flaky: false,
-            output_excerpt: None,
-        }
-    }
 }
 
 /// Cap for `ExecutedTask.output_excerpt`. `railway up` / `vercel
@@ -2317,16 +2312,27 @@ fn container_plan(workspace: &Workspace) -> Option<ContainerPlan> {
     Some(ContainerPlan { runtime, image })
 }
 
+/// Cache-key view of the container decision: `"<runtime> <image>"`
+/// when tasks will run containerised, `None` for native. Derived from
+/// the same resolution the executor uses, so a laptop without docker
+/// (native) and CI with docker (containerised) never share a key.
+pub(crate) fn container_key(workspace: &Workspace) -> Option<String> {
+    container_plan(workspace).map(|p| format!("{} {}", p.runtime, p.image))
+}
+
 fn detect_runtime() -> Option<&'static str> {
-    ["docker", "podman", "nerdctl"]
-        .into_iter()
-        .find(|candidate| {
-            Command::new(candidate)
-                .arg("--version")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        })
+    static RUNTIME: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *RUNTIME.get_or_init(|| {
+        ["docker", "podman", "nerdctl"]
+            .into_iter()
+            .find(|candidate| {
+                Command::new(candidate)
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+    })
 }
 
 fn build_container_command(
@@ -3504,29 +3510,26 @@ run = "true"
             depends_on: vec![],
         };
 
-        let img1 = crate::plan::container_image_for_plan(&ws1);
-        let img2 = crate::plan::container_image_for_plan(&ws2);
-
-        let (k1, _) = compute_key(
-            &tmp1.path().join("d"),
-            "d",
-            None,
-            &task,
-            &[],
-            img1.as_deref(),
-            &[],
-        )
-        .unwrap();
-        let (k2, _) = compute_key(
-            &tmp2.path().join("d"),
-            "d",
-            None,
-            &task,
-            &[],
-            img2.as_deref(),
-            &[],
-        )
-        .unwrap();
+        // `container_key` needs a runtime on PATH to resolve, which CI
+        // macOS runners lack — feed the resolved strings directly.
+        let key_for = |dir: &Path, container: Option<&str>| {
+            compute_key(&KeyInputs {
+                dish_dir: dir,
+                dish_name: "d",
+                dish_rel: Path::new("d"),
+                adapter: None,
+                task: &task,
+                dep_signatures: &[],
+                container,
+                task_dep_keys: &[],
+                env_aliases: &Default::default(),
+            })
+            .unwrap()
+            .0
+        };
+        let _ = (&ws1, &ws2);
+        let k1 = key_for(&tmp1.path().join("d"), Some("docker debian:12"));
+        let k2 = key_for(&tmp2.path().join("d"), Some("docker debian:13"));
 
         assert_ne!(
             k1.as_hex(),
@@ -3573,28 +3576,24 @@ run = "true"
             depends_on: vec!["build".into()],
         };
 
-        let (without_dep, _) =
-            compute_key(&tmp.path().join("d"), "d", None, &task, &[], None, &[]).unwrap();
-        let (with_dep_a, _) = compute_key(
-            &tmp.path().join("d"),
-            "d",
-            None,
-            &task,
-            &[],
-            None,
-            &[("build", "aaaaaaaa")],
-        )
-        .unwrap();
-        let (with_dep_b, _) = compute_key(
-            &tmp.path().join("d"),
-            "d",
-            None,
-            &task,
-            &[],
-            None,
-            &[("build", "bbbbbbbb")],
-        )
-        .unwrap();
+        let key_for = |task_dep_keys: &[(&str, &str)]| {
+            compute_key(&KeyInputs {
+                dish_dir: &tmp.path().join("d"),
+                dish_name: "d",
+                dish_rel: Path::new("d"),
+                adapter: None,
+                task: &task,
+                dep_signatures: &[],
+                container: None,
+                task_dep_keys,
+                env_aliases: &Default::default(),
+            })
+            .unwrap()
+            .0
+        };
+        let without_dep = key_for(&[]);
+        let with_dep_a = key_for(&[("build", "aaaaaaaa")]);
+        let with_dep_b = key_for(&[("build", "bbbbbbbb")]);
 
         assert_ne!(
             without_dep.as_hex(),

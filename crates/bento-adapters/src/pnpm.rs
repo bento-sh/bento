@@ -115,6 +115,10 @@ impl LanguageAdapter for PnpmAdapter {
         detected_npm_scripts(dir, "pnpm run")
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        crate::node_common::node_derived_paths()
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
         let inputs = base_inputs("pnpm-lock.yaml");
         vec![
@@ -203,10 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn build_inputs_include_lockfile() {
+    fn build_inputs_cover_whole_tree_and_node_modules_is_derived() {
         let tasks = PnpmAdapter.default_tasks();
-        let inputs = tasks[0].inputs.as_ref().unwrap();
-        assert!(inputs.iter().any(|i| i == "pnpm-lock.yaml"));
+        assert_eq!(tasks[0].inputs.as_deref(), Some(&["**".to_string()][..]));
+        assert!(PnpmAdapter
+            .derived_paths()
+            .iter()
+            .any(|d| d == "node_modules/**"));
     }
 
     #[test]

@@ -167,6 +167,8 @@ mod tests {
                         workspace_outputs: None,
                         env: vec![],
                         retry: 0,
+                        ci: false,
+                        cache: true,
                     },
                 )
             })

@@ -90,8 +90,14 @@ impl LanguageAdapter for MavenAdapter {
         java_version()
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        vec!["target/**".into()]
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
-        let inputs = vec!["src/**".into(), "pom.xml".into()];
+        // Whole tree so a `<modules>` aggregator dish sees every
+        // module's `src/`; `target/` is pruned by the walker.
+        let inputs = vec!["**".into()];
 
         vec![
             DefaultTask {

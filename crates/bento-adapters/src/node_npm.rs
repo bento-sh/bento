@@ -122,6 +122,10 @@ impl LanguageAdapter for NodeNpmAdapter {
         detected_npm_scripts(dir, "npm run")
     }
 
+    fn derived_paths(&self) -> Vec<String> {
+        crate::node_common::node_derived_paths()
+    }
+
     fn default_tasks(&self) -> Vec<DefaultTask> {
         let inputs = base_inputs("package-lock.json");
 

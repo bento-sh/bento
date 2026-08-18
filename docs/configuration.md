@@ -254,7 +254,7 @@ go = "1.22.5"
 [tasks.build]
 run = "go build -o bin/api ./cmd/api"
 # Replaces the adapter default verbatim — restate every glob you want
-# in this task's cache key, including any extras (e.g. openapi.yaml).
+# in this task's cache key. Omit to keep the adapter default.
 inputs = ["**/*.go", "go.mod", "go.sum", "openapi.yaml"]
 outputs = ["bin/api"]
 
@@ -279,7 +279,7 @@ run = "air"
 | `name` | string | required | Dish handle. Used by CLI flags (`bento build <name>`) and bentos' `dishes` list. Must be unique across the workspace. |
 | `language` | string | adapter-detected | Adapter id (`go`, `cargo`, `python`, `python-uv`, `ruby`, `php`, `maven`, `gradle`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`, `deno`, or any plugin's id). When omitted, bento auto-detects from the dish dir. |
 | `package_manager` | string | unset | Reserved for future use; no behaviour today. |
-| `inputs` | `string[]` | `[]` | Glob patterns relative to the dish dir, mixed into the cache key only for **custom tasks** (task names outside the adapter's lifecycle set — `build` / `test` / `lint`, plus `check` on cargo + go). Lifecycle tasks use the adapter's default `inputs` and **silently ignore** anything declared here; for those, declare `inputs` under `[tasks.<name>]` instead (see below). Adapters add their own fingerprint files automatically (lockfiles, toolchain pin files, `.tool-versions`). Bento emits a `tracing::warn!` at plan time when a non-empty dish-level `inputs` is shadowed. |
+| `inputs` | `string[]` | `[]` | Glob patterns relative to the dish dir, **unioned** into every task's cache key on top of the adapter's defaults. Adapter defaults are pessimistic — most adapters hash the whole dish tree (`**`) minus derived dirs (`node_modules/`, `target/`, `dist/`, `build/`, `.next/`, `vendor/`, `.venv/`, …), so you rarely need this; it's for a no-adapter dish, or to hash a file the adapter's derived list excludes. Adapters add their own fingerprint files automatically (lockfiles, toolchain pin files, `.tool-versions`). |
 | `outputs` | `string[]` | `[]` | Glob patterns of build artefacts. Listed by `bento artifacts` and the GHA `artifacts` output. |
 | `depends_on` | `string[]` | `[]` | Other dish names this dish depends on. Builds upstream first. Changes upstream invalidate this dish (unless `force_independent`). |
 | `force_independent` | bool | `false` | Opt out of the pessimistic cascade — only this dish's own inputs go into its cache key. |
@@ -295,15 +295,17 @@ Tasks named `build`, `test`, `lint` (plus `check` on cargo + go) get **default r
 - Declare a custom task name (e.g. `migrate`, `seed`, `deploy-preview`)
 - Add task-specific `inputs` / `outputs` / `env` / `retry` config
 
-Custom-named tasks (anything outside the adapter's lifecycle set) don't get pulled into `bento ci` — they only run when explicitly invoked via `bento run <dish> <task> -- <args>`. That's the escape hatch for ad-hoc CLIs, migrations, and one-off scripts: same dish-dir cwd + toolchain semantics as a cached task, but the run bypasses the content-hash cache so non-deterministic invocations stay correct.
+Custom-named tasks (anything outside the adapter's lifecycle set) don't get pulled into `bento ci` unless they set `ci = true` — otherwise they only run when explicitly invoked via `bento run <dish> <task> -- <args>`. That's the escape hatch for ad-hoc CLIs, migrations, and one-off scripts: same dish-dir cwd + toolchain semantics as a cached task, but the run bypasses the content-hash cache so non-deterministic invocations stay correct.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `run` | string | required | Shell command. Runs from the dish dir, with the dish's `[toolchain]` honoured. |
-| `inputs` | `string[]` | adapter default | Glob patterns mixed into the cache key for **this task only**. **Replaces** (does not merge with) the adapter's default `inputs` — restate the adapter globs you still want (e.g. `src/**`, lockfile) plus your additions. Omit to use the adapter's default verbatim. The dish-level `inputs` field is not folded in here either; if you want a glob in every lifecycle task, repeat it under each `[tasks.<name>]`. |
-| `outputs` | `string[]` | none | Glob patterns of artefacts produced by this task. Combined with the dish's `outputs` for `bento artifacts`. |
-| `env` | `string[]` | `[]` | Names of env vars whose **values** should mix into the cache key. The names are visible (in `bento why`); the values are hashed only. |
+| `inputs` | `string[]` | adapter default | Glob patterns mixed into the cache key for **this task only**. **Replaces** (does not merge with) the adapter's default `inputs`; the dish-level `inputs` field is not folded in either. Omit to use the adapter's default (usually `**` minus derived dirs). A task's own `outputs` and the universal noise dirs (`.git`, `.bento`, `node_modules`, `target`, `dist`, `build`, `.next`) are never hashed as inputs. |
+| `outputs` | `string[]` | none | Glob patterns of artefacts produced by this task, restored on cache hit. A trailing slash means the whole directory (`dist/` ≡ `dist/**`). Changing `outputs` changes the cache key. |
+| `env` | `string[]` | `[]` | Names of env vars whose **values** should mix into the cache key. The names are visible (in `bento why`); the values are hashed only. Under `bento deploy --env <name>` / `--secret-from`, the aliased *source* value is what gets hashed. |
 | `retry` | int | `0` | Additional attempts on failure. `retry = 2` → up to 3 attempts. A task that succeeds on attempt > 1 is reported `flaky: true` in the execution report. |
+| `ci` | bool | `false` | Include a custom-named task in `bento ci` / `bento plan`. Lifecycle names (`build` / `check` / `test` / `lint`) always run; every other name is `bento run`-only unless it opts in — so a `dev` script mirrored from `package.json` never runs in CI. |
+| `cache` | bool | `true` | `false` = always run, never restore from cache (Turborepo's `cache: false`). A custom task on a no-adapter dish with no `inputs` is treated as `cache = false` automatically — a task that hashes nothing would otherwise hit forever. |
 
 ### `[serve]`
 
