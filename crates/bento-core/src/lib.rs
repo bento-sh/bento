@@ -11,6 +11,7 @@ pub mod diagnostic_parsers;
 pub mod diff;
 pub mod discovery;
 pub mod doctor;
+pub mod errors;
 pub mod garnish;
 pub mod graph;
 pub mod inventory;
@@ -23,6 +24,7 @@ pub mod why;
 pub use diff::GitDiff;
 pub use discovery::{scan_orphan_dishes, scan_orphans};
 pub use doctor::{CheckStatus, DoctorCheck, DoctorReport, DoctorSummary};
+pub use errors::{classify, BentoError, DeployError};
 pub use garnish::{GarnishPayload, GarnishPayloadTrigger, GARNISH_PAYLOAD_SCHEMA_VERSION};
 pub use graph::{build as build_graph, BentoGraph, GraphError};
 pub use plan::{
