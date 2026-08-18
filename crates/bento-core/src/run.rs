@@ -578,14 +578,31 @@ impl Executor {
                 // deterministic for logs, and gets ≈90% of the benefit of
                 // a work-stealing scheduler for typical monorepos.
                 for chunk in targets.chunks(parallelism) {
+                    // Toolchains resolve on this thread, before the
+                    // fan-out: `ensure_toolchain` mutates PATH (setenv
+                    // from worker threads races getenv in siblings —
+                    // UB on glibc) and two dishes pinning the same tool
+                    // would otherwise both download it.
+                    let mut toolchains: Vec<Vec<PathBuf>> = Vec::with_capacity(chunk.len());
+                    for loaded in chunk {
+                        let adapter = resolve_adapter(&self.registry, loaded);
+                        toolchains.push(self.ensure_toolchain(loaded, adapter)?);
+                    }
                     let dep_sigs_ref = &dep_sigs;
                     let bento_name_ref = bento_name.as_str();
                     let results = std::thread::scope(|scope| -> Vec<_> {
                         let handles: Vec<_> = chunk
                             .iter()
-                            .map(|loaded| {
+                            .zip(toolchains)
+                            .map(|(loaded, toolchain_paths)| {
                                 scope.spawn(move || {
-                                    self.execute_dish(loaded, bento_name_ref, opts, dep_sigs_ref)
+                                    self.execute_dish(
+                                        loaded,
+                                        bento_name_ref,
+                                        opts,
+                                        dep_sigs_ref,
+                                        toolchain_paths,
+                                    )
                                 })
                             })
                             .collect();
@@ -647,6 +664,7 @@ impl Executor {
         bento_name: &str,
         opts: &CiOptions,
         dep_sigs: &std::collections::BTreeMap<String, crate::cascade::DishSig>,
+        toolchain_paths: Vec<PathBuf>,
     ) -> Result<(ExecutedDish, DishStats)> {
         let adapter = resolve_adapter(&self.registry, loaded);
         let integrations = resolve_integrations(&self.integrations, loaded);
@@ -715,11 +733,6 @@ impl Executor {
                 stats,
             ));
         }
-
-        // Resolve + install toolchain once per dish (it's the same for
-        // every task in this dish). Errors in install bubble up as a
-        // dish-level failure since we can't safely run any task.
-        let toolchain_paths = self.ensure_toolchain(loaded, adapter)?;
 
         // Check whether the dish's deps are installed; if not, run
         // `adapter.install()` before any task executes. Tasks that cache-hit
@@ -2444,9 +2457,9 @@ fn build_path(prepend: &[PathBuf]) -> OsString {
 /// (e.g. uv) is visible to the next `installer.ensure(primary)` call,
 /// which shells out via `Command::new(...)` and inherits PATH.
 ///
-/// Edition 2021 — `set_var` is safe. bento's CLI is single-threaded
-/// at this point (toolchain installs run sequentially before any
-/// task work spawns); nothing else is mutating PATH concurrently.
+/// Only ever called from the executor's main thread, before a level's
+/// worker threads spawn — `set_var` from a worker would race `getenv`
+/// in its siblings.
 fn prepend_path_env(bin_dir: &Path) {
     let cur = std::env::var_os("PATH").unwrap_or_default();
     let mut paths: Vec<PathBuf> = std::env::split_paths(&cur).collect();
