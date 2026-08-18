@@ -394,7 +394,7 @@ pub(crate) fn resolve_tasks(
     let mut out: BTreeMap<String, ResolvedTask> = BTreeMap::new();
 
     if let Some(a) = adapter {
-        for default in a.default_tasks() {
+        for default in a.default_tasks(dish_dir) {
             out.insert(default.name.clone(), resolved_from_default(default, dish));
         }
     }

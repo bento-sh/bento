@@ -142,7 +142,7 @@ impl LanguageAdapter for CargoAdapter {
         vec!["target/**".into()]
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         // Whole tree: a workspace-root dish must see `crates/*/src`, and
         // `.cargo/config.toml` / `rust-toolchain.toml` / `build.rs`
         // siblings all shape the build. `target/` is derived (above).
@@ -294,7 +294,7 @@ version = "0"
 
     #[test]
     fn default_tasks_include_build_check_test_clippy() {
-        let tasks = CargoAdapter.default_tasks();
+        let tasks = CargoAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "check", "test", "lint"]);
         assert_eq!(tasks[0].run, "cargo build --locked");
@@ -309,7 +309,7 @@ version = "0"
         // bento check shares cargo build's lockfile + source set so
         // an unrelated source edit invalidates both task caches in
         // lockstep — running check once won't poison build's hit.
-        let tasks = CargoAdapter.default_tasks();
+        let tasks = CargoAdapter.default_tasks(Path::new("."));
         let build = tasks.iter().find(|t| t.name == "build").unwrap();
         let check = tasks.iter().find(|t| t.name == "check").unwrap();
         assert_eq!(build.inputs, check.inputs);
@@ -317,7 +317,7 @@ version = "0"
 
     #[test]
     fn inputs_cover_whole_tree_and_target_is_derived() {
-        let tasks = CargoAdapter.default_tasks();
+        let tasks = CargoAdapter.default_tasks(Path::new("."));
         for t in &tasks {
             assert_eq!(
                 t.inputs.as_deref(),

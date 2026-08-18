@@ -104,7 +104,7 @@ impl LanguageAdapter for RubyAdapter {
         crate::probe::memoised("ruby", &["--version"])
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let inputs = vec!["**/*.rb".into(), "Gemfile".into(), "Gemfile.lock".into()];
 
         vec![
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_bundler_and_rubocop() {
-        let tasks = RubyAdapter.default_tasks();
+        let tasks = RubyAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[0].run, "bundle check");

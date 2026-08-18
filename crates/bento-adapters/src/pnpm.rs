@@ -122,7 +122,7 @@ impl LanguageAdapter for PnpmAdapter {
         crate::node_common::node_derived_paths()
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let inputs = base_inputs("pnpm-lock.yaml");
         vec![
             DefaultTask {
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_pnpm_run() {
-        let tasks = PnpmAdapter.default_tasks();
+        let tasks = PnpmAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert!(tasks[0].run.starts_with("pnpm run"));
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn build_inputs_cover_whole_tree_and_node_modules_is_derived() {
-        let tasks = PnpmAdapter.default_tasks();
+        let tasks = PnpmAdapter.default_tasks(Path::new("."));
         assert_eq!(tasks[0].inputs.as_deref(), Some(&["**".to_string()][..]));
         assert!(PnpmAdapter
             .derived_paths()

@@ -3801,7 +3801,7 @@ depends_on = ["a"]
         fn install(&self, _: &bento_adapters::TaskContext) -> anyhow::Result<()> {
             Ok(())
         }
-        fn default_tasks(&self) -> Vec<bento_adapters::DefaultTask> {
+        fn default_tasks(&self, _dir: &std::path::Path) -> Vec<bento_adapters::DefaultTask> {
             Vec::new()
         }
         fn diagnostic_hook(&self, task: &str) -> Option<bento_adapters::DiagnosticHook> {
@@ -3909,7 +3909,7 @@ run = "exit 1"
             fn install(&self, _: &bento_adapters::TaskContext) -> anyhow::Result<()> {
                 Ok(())
             }
-            fn default_tasks(&self) -> Vec<bento_adapters::DefaultTask> {
+            fn default_tasks(&self, _dir: &std::path::Path) -> Vec<bento_adapters::DefaultTask> {
                 Vec::new()
             }
             // diagnostic_hook intentionally inherits the trait's None default.
@@ -4023,7 +4023,7 @@ run = "true"
         fn install_probe(&self, _: &Path) -> InstallProbe {
             self.probe.clone()
         }
-        fn default_tasks(&self) -> Vec<bento_adapters::DefaultTask> {
+        fn default_tasks(&self, _dir: &std::path::Path) -> Vec<bento_adapters::DefaultTask> {
             Vec::new()
         }
     }
@@ -4221,7 +4221,7 @@ run = "true"
         fn install_scope(&self, _: &Path) -> PathBuf {
             self.scope.clone()
         }
-        fn default_tasks(&self) -> Vec<bento_adapters::DefaultTask> {
+        fn default_tasks(&self, _dir: &std::path::Path) -> Vec<bento_adapters::DefaultTask> {
             Vec::new()
         }
     }

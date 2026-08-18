@@ -172,7 +172,7 @@ impl LanguageAdapter for SubprocessAdapter {
         Ok(())
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         self.default_tasks.clone()
     }
 

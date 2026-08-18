@@ -110,7 +110,7 @@ impl LanguageAdapter for DenoAdapter {
         crate::probe::memoised("deno", &["--version"])
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let inputs = vec![
             "src/**".into(),
             "**/*.ts".into(),
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_deno_commands() {
-        let tasks = DenoAdapter.default_tasks();
+        let tasks = DenoAdapter.default_tasks(Path::new("."));
         assert_eq!(tasks[0].name, "build");
         assert!(tasks[0].run.contains("deno"));
         assert_eq!(tasks[1].run, "deno test --allow-read");

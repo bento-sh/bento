@@ -194,7 +194,7 @@ fn subprocess_adapter_install_succeeds_and_default_tasks_present() {
     let ctx = TaskContext::new(dish_dir.path(), "demo");
     adapter.install(&ctx).expect("noop install should succeed");
 
-    let tasks = adapter.default_tasks();
+    let tasks = adapter.default_tasks(dish_dir.path());
     let task_names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(task_names, vec!["build", "test", "lint"]);
     assert_eq!(tasks[0].run, "echo noop build");

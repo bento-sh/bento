@@ -107,7 +107,7 @@ impl LanguageAdapter for GoAdapter {
         }
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let go_inputs = vec!["**/*.go".into(), "go.mod".into(), "go.sum".into()];
         vec![
             DefaultTask {
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn default_tasks_include_build_check_test_lint() {
-        let tasks = GoAdapter.default_tasks();
+        let tasks = GoAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "check", "test", "lint"]);
         assert!(tasks[0].run.starts_with("go build"));
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn default_task_inputs_include_go_sources_and_lockfiles() {
-        let tasks = GoAdapter.default_tasks();
+        let tasks = GoAdapter.default_tasks(Path::new("."));
         // build / check / test all share the same go-source globs.
         for name in ["build", "check", "test"] {
             let t = tasks.iter().find(|t| t.name == name).unwrap();

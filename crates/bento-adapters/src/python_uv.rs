@@ -133,7 +133,7 @@ impl LanguageAdapter for PythonUvAdapter {
         }
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let inputs = vec![
             "src/**".into(),
             "**/*.py".into(),
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_uv_run() {
-        let tasks = PythonUvAdapter.default_tasks();
+        let tasks = PythonUvAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[0].run, "uv build");

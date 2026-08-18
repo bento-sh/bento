@@ -129,7 +129,7 @@ impl LanguageAdapter for NodeNpmAdapter {
         crate::node_common::node_derived_paths()
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let inputs = base_inputs("package-lock.json");
 
         vec![
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn default_tasks_include_build_test_lint() {
-        let tasks = NodeNpmAdapter.default_tasks();
+        let tasks = NodeNpmAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[0].run, "npm run build");
@@ -323,14 +323,14 @@ mod tests {
 
     #[test]
     fn build_task_declares_dist_outputs() {
-        let tasks = NodeNpmAdapter.default_tasks();
+        let tasks = NodeNpmAdapter.default_tasks(Path::new("."));
         let outputs = tasks[0].outputs.as_ref().unwrap();
         assert!(outputs.contains(&"dist/**".to_string()));
     }
 
     #[test]
     fn lint_task_includes_eslint_config_in_inputs() {
-        let tasks = NodeNpmAdapter.default_tasks();
+        let tasks = NodeNpmAdapter.default_tasks(Path::new("."));
         let inputs = tasks[2].inputs.as_ref().unwrap();
         assert!(inputs.iter().any(|i| i == ".eslintrc*"));
         assert!(inputs.iter().any(|i| i == "eslint.config.*"));

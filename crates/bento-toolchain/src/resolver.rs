@@ -233,7 +233,7 @@ mod tests {
         fn install(&self, _ctx: &TaskContext) -> Result<()> {
             Ok(())
         }
-        fn default_tasks(&self) -> Vec<DefaultTask> {
+        fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
             Vec::new()
         }
     }

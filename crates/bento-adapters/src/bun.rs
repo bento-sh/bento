@@ -140,7 +140,7 @@ impl LanguageAdapter for BunAdapter {
         crate::node_common::node_derived_paths()
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let mut inputs = base_inputs("bun.lock");
         inputs.push("bun.lockb".into());
         inputs.push("bunfig.toml".into());
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_bun_test() {
-        let tasks = BunAdapter.default_tasks();
+        let tasks = BunAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[1].run, "bun test");

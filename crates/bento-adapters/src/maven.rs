@@ -94,7 +94,7 @@ impl LanguageAdapter for MavenAdapter {
         vec!["target/**".into()]
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         // Whole tree so a `<modules>` aggregator dish sees every
         // module's `src/`; `target/` is pruned by the walker.
         let inputs = vec!["**".into()];
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_mvn_lifecycle() {
-        let tasks = MavenAdapter.default_tasks();
+        let tasks = MavenAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[0].run, "mvn package -DskipTests");

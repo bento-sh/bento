@@ -113,7 +113,7 @@ impl LanguageAdapter for PhpAdapter {
         vec!["vendor/**".into()]
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         let inputs = vec![
             "**/*.php".into(),
             "composer.json".into(),
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_composer_phpunit_phpstan() {
-        let tasks = PhpAdapter.default_tasks();
+        let tasks = PhpAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[0].run, "composer install");

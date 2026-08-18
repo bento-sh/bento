@@ -149,7 +149,7 @@ fn content_hash(
         for f in a.fingerprint_files() {
             add_glob(&mut globs, f);
         }
-        for t in a.default_tasks() {
+        for t in a.default_tasks(dish_dir) {
             for g in t.inputs.unwrap_or_default() {
                 add_glob(&mut globs, g);
             }

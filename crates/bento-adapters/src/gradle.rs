@@ -133,7 +133,7 @@ impl LanguageAdapter for GradleAdapter {
         vec![".gradle/**".into(), "build/**".into()]
     }
 
-    fn default_tasks(&self) -> Vec<DefaultTask> {
+    fn default_tasks(&self, _dir: &Path) -> Vec<DefaultTask> {
         // Whole tree so a multi-project root dish sees every
         // subproject's `src/`; `build/` is pruned, `.gradle/` derived.
         let inputs = vec!["**".into()];
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn default_tasks_use_gradlew_lifecycle() {
-        let tasks = GradleAdapter.default_tasks();
+        let tasks = GradleAdapter.default_tasks(Path::new("."));
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
         assert_eq!(tasks[0].run, "./gradlew build -x test");

@@ -326,7 +326,13 @@ pub trait LanguageAdapter: Send + Sync {
     }
 
     /// Default tasks supplied by this adapter (merged with `dish.toml`).
-    fn default_tasks(&self) -> Vec<DefaultTask>;
+    ///
+    /// `dir` is the dish dir, so a recipe can depend on what's actually
+    /// on disk: `./gradlew` vs `../gradlew` vs bare `gradle`, `./mvnw`
+    /// vs `mvn`, `cargo build --locked` only when a `Cargo.lock` exists.
+    /// Same cheapness contract as [`Self::detect`] — file-existence
+    /// checks, no subprocesses; this runs once per dish per plan.
+    fn default_tasks(&self, dir: &Path) -> Vec<DefaultTask>;
 
     /// Tasks discovered from project metadata in `dir`. Used by
     /// `bento init` / `bento dish add` to pre-populate `dish.toml` with
