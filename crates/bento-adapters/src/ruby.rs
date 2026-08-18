@@ -5,25 +5,21 @@
 //! - Toolchain pin (priority): `.ruby-version` (rbenv/rvm/asdf convention) >
 //!   the `ruby "x.y.z"` directive in `Gemfile` > `ruby` line in
 //!   `.tool-versions` (asdf/mise).
-//! - Install: `bundle install`.
-//! - Default tasks: `bundle install` (build — Ruby is interpreted, install
-//!   IS the build), `bundle exec rspec` or `bundle exec rake test` (test),
+//! - Install: `bundle install`, probe-driven via `bundle check`.
+//! - Default tasks: `bundle check` (build — Ruby is interpreted; the
+//!   side-effect-free resolve step), `bundle exec rspec` (test),
 //!   `bundle exec rubocop` (lint).
 //!
 //! Ruby's lint story: rubocop is dominant. Users without it can override
 //! the `lint` task in their `dish.toml`; same with test runner choice.
 //! Standard convention beats configurability.
-//!
-//! No "build" in the compiled-language sense — `bundle install` is the
-//! moral equivalent (downloads dependencies, regenerates lockfile if
-//! Gemfile changed).
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion};
 
 pub struct RubyAdapter;
 
@@ -86,6 +82,24 @@ impl LanguageAdapter for RubyAdapter {
         crate::adapter::run_install_cmd(ctx, &mut cmd, "bundle install")
     }
 
+    fn install_probe(&self, dir: &Path) -> InstallProbe {
+        // Bundler has no on-disk sentinel (gems live in a shared
+        // GEM_HOME); `bundle check` is the canonical "are we
+        // satisfied?" query and doesn't install anything.
+        match Command::new("bundle")
+            .arg("check")
+            .current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => InstallProbe::Ready,
+            Ok(_) => InstallProbe::missing("bundle check reports missing gems"),
+            // No `bundle` on PATH: let the task fail with the real error.
+            Err(_) => InstallProbe::Ready,
+        }
+    }
+
     fn resolved_toolchain_fingerprint(&self) -> Option<String> {
         crate::probe::memoised("ruby", &["--version"])
     }
@@ -95,11 +109,14 @@ impl LanguageAdapter for RubyAdapter {
 
         vec![
             DefaultTask {
-                // Ruby is interpreted — `bundle install` is the closest
-                // thing to "build". A user with a real build step (asset
-                // precompile, native gem compile) overrides in dish.toml.
+                // Ruby is interpreted; installing is `install()`'s job
+                // (probe-driven), so a cached build must not be the
+                // thing that puts gems on disk. `bundle check` is the
+                // side-effect-free "does the graph resolve" step. A
+                // real build (asset precompile, native gems) is a
+                // dish.toml override.
                 name: "build".into(),
-                run: "bundle install".into(),
+                run: "bundle check".into(),
                 inputs: Some(inputs.clone()),
                 outputs: None,
             },
@@ -311,7 +328,7 @@ mod tests {
         let tasks = RubyAdapter.default_tasks();
         let names: Vec<_> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["build", "test", "lint"]);
-        assert_eq!(tasks[0].run, "bundle install");
+        assert_eq!(tasks[0].run, "bundle check");
         assert_eq!(tasks[1].run, "bundle exec rspec");
         assert_eq!(tasks[2].run, "bundle exec rubocop");
     }
