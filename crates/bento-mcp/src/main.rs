@@ -12,7 +12,7 @@ use anyhow::Result;
 use bento_config::Workspace;
 use clap::Parser;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{CallToolResult, Content, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ProtocolVersion, ServerCapabilities, ServerInfo};
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 use tokio::sync::Mutex;
@@ -67,26 +67,19 @@ impl BentoServer {
         }
     }
 
-    #[tool(description = "Round-trip sanity check. Returns `pong` plus the \
-                       workspace root the server resolved at startup. \
-                       Kept as a lightweight liveness probe; the real \
-                       agent-surface tools start with `prime`.")]
-    async fn ping(&self) -> Result<CallToolResult, McpError> {
-        let ctx = self.ctx.lock().await;
-        let root = ctx
-            .workspace_root()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(unresolved)".to_string());
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "pong · workspace_root = {root}"
-        ))]))
-    }
-
-    #[tool(description = "Agent orientation — workspace inventory, cache state, \
+    #[tool(
+        description = "Agent orientation — workspace inventory, cache state, \
                        plan preview, and a ranked list of recommended next \
                        verbs. Call this first in a fresh session. Advisory \
                        only; does not execute tasks and does not hit the \
-                       network. Same output shape as `bento prime --json`.")]
+                       network. Same output shape as `bento prime --json`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn prime(&self) -> Result<CallToolResult, McpError> {
         let root = self.require_workspace_root().await?;
         let workspace =
@@ -96,11 +89,19 @@ impl BentoServer {
         Ok(CallToolResult::structured(value))
     }
 
-    #[tool(description = "JSON Schema for a named bento output. `target` must \
+    #[tool(
+        description = "JSON Schema for a named bento output. `target` must \
                        be one of: plan, report, manifest, doctor, \
                        diagnostics, garnish-payload, prime. Matches \
                        `bento schema <target>` for the bento-core-owned \
-                       types.")]
+                       types.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn schema(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -111,12 +112,20 @@ impl BentoServer {
         Ok(CallToolResult::structured(schema_value))
     }
 
-    #[tool(description = "Cache-aware task plan — which tasks would hit, \
+    #[tool(
+        description = "Cache-aware task plan — which tasks would hit, \
                        miss, or skip on `bento ci`. Same output shape as \
                        `bento plan --json`, including per-task miss_reason \
                        and workspace-level orphan dish.toml list. \
                        `target` accepts a bento or dish name (like \
-                       `bento plan <target>`); omit to plan every bento.")]
+                       `bento plan <target>`); omit to plan every bento.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn plan(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -148,10 +157,18 @@ impl BentoServer {
         Ok(CallToolResult::structured(value))
     }
 
-    #[tool(description = "List every dish in the workspace with its path, \
+    #[tool(
+        description = "List every dish in the workspace with its path, \
                        language, and which bentos include it. Flags orphan \
                        dish.toml files on disk. Same output shape as \
-                       `bento dish list --json`.")]
+                       `bento dish list --json`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn dish_list(&self) -> Result<CallToolResult, McpError> {
         let root = self.require_workspace_root().await?;
         let workspace =
@@ -161,9 +178,17 @@ impl BentoServer {
         Ok(CallToolResult::structured(value))
     }
 
-    #[tool(description = "List every bento in the workspace with its source \
+    #[tool(
+        description = "List every bento in the workspace with its source \
                        file and the dishes it includes. Same output shape \
-                       as `bento box list --json`.")]
+                       as `bento box list --json`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn box_list(&self) -> Result<CallToolResult, McpError> {
         let root = self.require_workspace_root().await?;
         let workspace =
@@ -173,12 +198,20 @@ impl BentoServer {
         Ok(CallToolResult::structured(value))
     }
 
-    #[tool(description = "Structured health checks over the workspace — \
+    #[tool(
+        description = "Structured health checks over the workspace — \
                        config parse, toolchain pins, integrations, local + \
                        remote cache, git, orphan dishes. Pass `cloud: true` \
                        to also probe cache.bento.build / api.bento.build \
                        reachability. Same output shape as `bento doctor \
-                       --json`.")]
+                       --json`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = true,
+            idempotent_hint = true
+        )
+    )]
     async fn doctor(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -196,11 +229,19 @@ impl BentoServer {
         Ok(CallToolResult::structured(value))
     }
 
-    #[tool(description = "Explain a cache entry — returns the stored input \
+    #[tool(
+        description = "Explain a cache entry — returns the stored input \
                        manifest (every hashed file, toolchain, env var). \
                        `target` is either `<dish>:<task>` (e.g. \
                        `marketing:lint`) or a cache-key hex prefix. Same \
-                       output shape as `bento why <target> --json`.")]
+                       output shape as `bento why <target> --json`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn why(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -243,11 +284,19 @@ impl BentoServer {
         Ok(CallToolResult::structured(value))
     }
 
-    #[tool(description = "Resolved absolute output paths per dish — walks \
+    #[tool(
+        description = "Resolved absolute output paths per dish — walks \
                        each dish's `[outputs]` (dish-level plus task-level, \
                        deduped) against the filesystem. Dishes with no \
                        resolved artefacts are omitted. Same output shape as \
-                       `bento artifacts --json`.")]
+                       `bento artifacts --json`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn artifacts(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -274,13 +323,21 @@ impl BentoServer {
 
     // ── Phase 2: execution tools ───────────────────────────────────
 
-    #[tool(description = "Install dish dependencies (node_modules, vendor, \
+    #[tool(
+        description = "Install dish dependencies (node_modules, vendor, \
                        .venv, …) via each adapter's native command. \
                        Same behaviour as `bento install` — skips the task \
                        loop entirely; the returned report has install \
                        records but no task rows. Pass `force: true` to \
                        run install unconditionally, ignoring the \
-                       adapter's probe.")]
+                       adapter's probe.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn install(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -309,11 +366,19 @@ impl BentoServer {
         run_and_emit(&root, &opts).await
     }
 
-    #[tool(description = "Build a bento or a single dish. Resolves adapter \
+    #[tool(
+        description = "Build a bento or a single dish. Resolves adapter \
                        `build` tasks + user-defined tasks named `build`; \
                        cache-hit tasks skip execution. Same behaviour as \
                        `bento build [target]` — returns an \
-                       ExecutionReport.")]
+                       ExecutionReport.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn build(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -323,12 +388,20 @@ impl BentoServer {
         self.run_task_tool(input, "build").await
     }
 
-    #[tool(description = "Fast type-check via the adapter's `check` task — \
+    #[tool(
+        description = "Fast type-check via the adapter's `check` task — \
                        `cargo check --locked --all-targets` for cargo, \
                        `go vet ./...` for go. Order of magnitude faster \
                        than `build` for catching compile / type \
                        errors during agent iteration. Cache hits skip \
-                       execution. Same behaviour as `bento check [target]`.")]
+                       execution. Same behaviour as `bento check [target]`.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn check(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -338,9 +411,17 @@ impl BentoServer {
         self.run_task_tool(input, "check").await
     }
 
-    #[tool(description = "Run every `test` task for a bento or dish. Cache \
+    #[tool(
+        description = "Run every `test` task for a bento or dish. Cache \
                        hits skip execution. Same behaviour as \
-                       `bento test [target]`.")]
+                       `bento test [target]`.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn test(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -350,9 +431,17 @@ impl BentoServer {
         self.run_task_tool(input, "test").await
     }
 
-    #[tool(description = "Run every `lint` task for a bento or dish. Cache \
+    #[tool(
+        description = "Run every `lint` task for a bento or dish. Cache \
                        hits skip execution. Same behaviour as \
-                       `bento lint [target]`.")]
+                       `bento lint [target]`.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn lint(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -362,11 +451,19 @@ impl BentoServer {
         self.run_task_tool(input, "lint").await
     }
 
-    #[tool(description = "Full CI pass — build + test + lint across every \
+    #[tool(
+        description = "Full CI pass — build + test + lint across every \
                        bento/dish (or a `target` if provided). Install is \
                        performed first, then every adapter/user task \
                        except integration Deploy/Notify tasks. Same \
-                       behaviour as `bento ci`.")]
+                       behaviour as `bento ci`.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false,
+            idempotent_hint = true
+        )
+    )]
     async fn ci(
         &self,
         rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
@@ -868,10 +965,13 @@ impl ServerHandler for BentoServer {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_server_info(implementation)
             .with_instructions(
-                "bento-mcp exposes the bento polyglot-monorepo \
-                 orchestrator as typed MCP tools. Start with \
-                 `prime` for a workspace snapshot once Phase 1 \
-                 ships. Today only the `ping` scaffold tool is wired.",
+                "bento — polyglot monorepo orchestrator. Call `prime` first \
+                 for the workspace snapshot and recommended next verb. \
+                 Read-only: prime, plan, dish_list, box_list, doctor, why, \
+                 artifacts, schema. Execution (mutates node_modules/target \
+                 only): install, build, check, test, lint, ci. deploy and \
+                 notify touch remote infrastructure. Every result is the \
+                 same JSON as `bento <verb> --json`.",
             )
     }
 }

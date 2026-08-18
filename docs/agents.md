@@ -141,11 +141,11 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 
 Restart Claude Desktop. The `mcp__bento__*` tools appear in the tool picker — grouped by capability:
 
-- **Read-only** (no confirmation needed): `bento_prime`, `bento_plan`, `bento_dish_list`, `bento_box_list`, `bento_doctor`, `bento_why`, `bento_artifacts`, `bento_schema`.
-- **Execution** (mutates `node_modules` / `target/`): `bento_install`, `bento_build`, `bento_check`, `bento_test`, `bento_lint`, `bento_ci`.
-- **Destructive + open-world** (client shows stronger confirmation): `bento_deploy`, `bento_notify`.
+- **Read-only** (`readOnlyHint`, no confirmation needed): `prime`, `plan`, `dish_list`, `box_list`, `doctor`, `why`, `artifacts`, `schema`.
+- **Execution** (mutates `node_modules` / `target/` only): `install`, `build`, `check`, `test`, `lint`, `ci`.
+- **Destructive + open-world** (`destructiveHint`, client shows stronger confirmation): `deploy`, `notify`.
 
-Write-path tools (`bento_dish_add`, `bento_init`, `bento_migrate`) are a follow-up — their CLI modules need to land in `bento-core` first.
+The MCP surface is a subset of the CLI: write-path verbs (`init`, `dish add`, `migrate`, `add`, `run`, `dev`/`serve`, `cache`, `toolchain`, `secret`) are CLI-only.
 
 ### Claude Code
 
