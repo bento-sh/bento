@@ -182,6 +182,14 @@ Every reporting command takes `--json` for machine-readable output. (Streaming v
 curl -fsSL https://raw.githubusercontent.com/bento-sh/bento/v0.1.0/install.sh | sh -s -- 0.1.0
 ```
 
+The installer picks its own target: on Linux it takes the static musl tarball when `ldd` reports musl or is missing (Alpine and friends), and the glibc one otherwise. The same detection runs inside the GitHub Action, so Alpine-based container jobs work without extra configuration.
+
+Every tarball, plus `SHA256SUMS`, carries a signed build-provenance attestation:
+
+```sh
+gh attestation verify bento-0.1.0-x86_64-unknown-linux-musl.tar.gz --repo bento-sh/bento
+```
+
 For private releases, set `GITHUB_TOKEN` or use `gh release download` manually. The GitHub Action handles both cases transparently.
 
 ### Verifying your install
@@ -549,7 +557,7 @@ For machine-readable output schemas: `bento schema [target]` (run with no target
 
 **Latest release: `v0.1.0` (2026-05-03).** See the [CHANGELOG](./CHANGELOG.md) for every release's notes.
 
-**Platforms.** v0.1 ships prebuilt binaries for Linux (x86_64 + aarch64) and macOS (x86_64 + aarch64). **Windows support is coming in v0.2** — until then, Windows users can `cargo install bento-cli` to build from source (most code paths work; a handful of Unix-isms are tier-2 follow-up work).
+**Platforms.** v0.1 ships prebuilt binaries for Linux glibc (x86_64 + aarch64), Linux musl (x86_64 + aarch64, static — Alpine), and macOS (x86_64 + aarch64). **Windows support is coming in v0.2** — until then, Windows users can `cargo install bento-cli` to build from source (most code paths work; a handful of Unix-isms are tier-2 follow-up work).
 
 Shipping features:
 

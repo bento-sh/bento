@@ -35,7 +35,18 @@ os=$(uname -s)
 arch=$(uname -m)
 
 case "$os" in
-    Linux)  os_triple=unknown-linux-gnu ;;
+    # Alpine (and any other musl distro) can't exec the glibc build — it
+    # fails with a bare "not found" from the missing ld-linux loader.
+    # `ldd --version` writes "musl libc" to stderr there; a box with no
+    # ldd at all is not glibc either, so the static build is the safe
+    # answer both ways.
+    Linux)
+        if ! command -v ldd >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; then
+            os_triple=unknown-linux-musl
+        else
+            os_triple=unknown-linux-gnu
+        fi
+        ;;
     Darwin) os_triple=apple-darwin ;;
     *)      die "unsupported OS: $os (v0.1 ships binaries for Linux + macOS only; Windows support coming in v0.2 — for now use 'cargo install bento-cli' on Windows)" ;;
 esac

@@ -117,7 +117,16 @@ phase_install_bento() {
         *)             echo "::error::unsupported arch $(uname -m)" >&2; exit 1 ;;
     esac
     case "$(uname -s)" in
-        Linux)  triple="${arch}-unknown-linux-gnu" ;;
+        # Container-based jobs on Alpine images can't exec the glibc
+        # build (no ld-linux loader). `ldd --version` reports "musl
+        # libc" there; no ldd at all is not glibc either.
+        Linux)
+            if ! command -v ldd >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; then
+                triple="${arch}-unknown-linux-musl"
+            else
+                triple="${arch}-unknown-linux-gnu"
+            fi
+            ;;
         Darwin) triple="${arch}-apple-darwin" ;;
         *)      echo "::error::unsupported OS $(uname -s)" >&2; exit 1 ;;
     esac
