@@ -16,7 +16,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, DetectedTask, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{
+    AddOptions, Added, DefaultTask, DetectedTask, LanguageAdapter, TaskContext, ToolVersion,
+};
 
 pub struct DenoAdapter;
 
@@ -93,6 +95,28 @@ impl LanguageAdapter for DenoAdapter {
         cmd.args(["install", "--frozen=true"]);
         ctx.apply_env(&mut cmd);
         crate::adapter::run_install_cmd(ctx, &mut cmd, "deno install")
+    }
+
+    fn add(&self, ctx: &TaskContext, packages: &[&str], opts: AddOptions) -> Result<Vec<Added>> {
+        let mut cmd = Command::new("deno");
+        cmd.arg("add");
+        for p in packages {
+            cmd.arg(p);
+        }
+        ctx.apply_env(&mut cmd);
+        crate::adapter::run_add_cmd(ctx, &mut cmd, "deno add")?;
+        // Deno has no dev-dependency split — imports are imports.
+        let note = opts
+            .dev
+            .then(|| "deno has no dev-dependency split; added to imports".to_string());
+        Ok(packages
+            .iter()
+            .map(|p| Added {
+                package: (*p).to_string(),
+                version: None,
+                note: note.clone(),
+            })
+            .collect())
     }
 
     fn resolved_toolchain_fingerprint(&self) -> Option<String> {

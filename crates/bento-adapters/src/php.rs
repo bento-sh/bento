@@ -19,7 +19,8 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use crate::adapter::{
-    DefaultTask, DetectedTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion,
+    AddOptions, Added, DefaultTask, DetectedTask, InstallProbe, LanguageAdapter, TaskContext,
+    ToolVersion,
 };
 
 pub struct PhpAdapter;
@@ -85,6 +86,32 @@ impl LanguageAdapter for PhpAdapter {
         cmd.arg("install");
         ctx.apply_env(&mut cmd);
         crate::adapter::run_install_cmd(ctx, &mut cmd, "composer install")
+    }
+
+    fn add(&self, ctx: &TaskContext, packages: &[&str], opts: AddOptions) -> Result<Vec<Added>> {
+        let mut cmd = Command::new("composer");
+        cmd.arg("require");
+        if opts.dev {
+            cmd.arg("--dev");
+        }
+        for p in packages {
+            cmd.arg(p);
+        }
+        ctx.apply_env(&mut cmd);
+        let label = if opts.dev {
+            "composer require --dev"
+        } else {
+            "composer require"
+        };
+        crate::adapter::run_add_cmd(ctx, &mut cmd, label)?;
+        Ok(packages
+            .iter()
+            .map(|p| Added {
+                package: (*p).to_string(),
+                version: None,
+                note: None,
+            })
+            .collect())
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {

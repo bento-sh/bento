@@ -17,7 +17,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{
+    AddOptions, Added, DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion,
+};
 use crate::diagnostic::{DiagnosticHook, DiagnosticParser, DiagnosticRerun, ParserId};
 
 pub struct PythonAdapter;
@@ -152,6 +154,43 @@ impl LanguageAdapter for PythonAdapter {
         cmd.args(&target);
         ctx.apply_env(&mut cmd);
         crate::adapter::run_install_cmd(ctx, &mut cmd, &format!("pip install {}", target.join(" ")))
+    }
+
+    fn add(&self, ctx: &TaskContext, packages: &[&str], opts: AddOptions) -> Result<Vec<Added>> {
+        // Only poetry has a "record this dependency" verb on the pip
+        // path. A bare `pip install X` writes nothing to pyproject.toml
+        // or requirements.txt, so the dep would vanish on the next
+        // pristine clone — worse than refusing.
+        if !ctx.dish_dir.join("poetry.lock").is_file() {
+            anyhow::bail!(
+                "`bento add` on a pip dish would install without recording the \
+                 dependency — add it to pyproject.toml / requirements.txt by hand, \
+                 or adopt uv or poetry"
+            );
+        }
+        let mut cmd = Command::new("poetry");
+        cmd.arg("add");
+        if opts.dev {
+            cmd.args(["--group", "dev"]);
+        }
+        for p in packages {
+            cmd.arg(p);
+        }
+        ctx.apply_env(&mut cmd);
+        let label = if opts.dev {
+            "poetry add --group dev"
+        } else {
+            "poetry add"
+        };
+        crate::adapter::run_add_cmd(ctx, &mut cmd, label)?;
+        Ok(packages
+            .iter()
+            .map(|p| Added {
+                package: (*p).to_string(),
+                version: None,
+                note: None,
+            })
+            .collect())
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {

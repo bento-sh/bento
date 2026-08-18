@@ -157,7 +157,7 @@ A minimal workspace needs just one `bentos/<name>.toml` and one `dish.toml`. Def
 |---------|--------------|
 | `bento init` | Bootstrap a workspace; auto-detect dishes in subdirs, capture toolchain pins |
 | `bento dish add <path>` | Add a dish (scaffold new code or adopt an existing dir) |
-| `bento add <pkg>… [--dish <d>] [--dev]` | Add a dependency to a dish via its native package manager (cargo / bun / npm / pnpm / yarn / go) |
+| `bento add <pkg>… [--dish <d>] [--dev]` | Add a dependency to a dish via its native package manager (cargo / bun / npm / pnpm / yarn / go / composer / bundle / uv / poetry / deno) |
 | `bento plan` | Show what would build and why; cache hit/miss per task |
 | `bento ci` | Plan and execute everything; the GitHub Action entry point |
 | `bento build \| check \| test \| lint [target]` | Run one task across a bento or single dish (`check` is the fast type-check verb — `cargo check`, `go vet`) |

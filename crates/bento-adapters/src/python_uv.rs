@@ -25,7 +25,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::adapter::{DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion};
+use crate::adapter::{
+    AddOptions, Added, DefaultTask, InstallProbe, LanguageAdapter, TaskContext, ToolVersion,
+};
 use crate::diagnostic::{DiagnosticHook, DiagnosticParser, DiagnosticRerun, ParserId};
 
 pub struct PythonUvAdapter;
@@ -103,6 +105,28 @@ impl LanguageAdapter for PythonUvAdapter {
         cmd.args(["sync", "--frozen"]);
         ctx.apply_env(&mut cmd);
         crate::adapter::run_install_cmd(ctx, &mut cmd, "uv sync --frozen")
+    }
+
+    fn add(&self, ctx: &TaskContext, packages: &[&str], opts: AddOptions) -> Result<Vec<Added>> {
+        let mut cmd = Command::new("uv");
+        cmd.arg("add");
+        if opts.dev {
+            cmd.arg("--dev");
+        }
+        for p in packages {
+            cmd.arg(p);
+        }
+        ctx.apply_env(&mut cmd);
+        let label = if opts.dev { "uv add --dev" } else { "uv add" };
+        crate::adapter::run_add_cmd(ctx, &mut cmd, label)?;
+        Ok(packages
+            .iter()
+            .map(|p| Added {
+                package: (*p).to_string(),
+                version: None,
+                note: None,
+            })
+            .collect())
     }
 
     fn install_probe(&self, dir: &Path) -> InstallProbe {
