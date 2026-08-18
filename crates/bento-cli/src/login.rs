@@ -113,10 +113,7 @@ pub fn run() -> Result<i32> {
     let sink = store_cache_token(&jwt).context("storing JWT")?;
     match sink {
         TokenSink::Keychain => println!("Logged in. Token stored in OS keychain."),
-        TokenSink::File(path) => println!(
-            "Logged in. Keychain unavailable — token stored at {} (0600).",
-            path.display()
-        ),
+        TokenSink::File(path) => println!("Logged in. Token stored at {} (0600).", path.display()),
     }
     Ok(0)
 }

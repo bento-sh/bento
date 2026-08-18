@@ -18,8 +18,15 @@
 //! back to the 0600 file. Callers get a [`TokenSink`] back so they can
 //! report *where* the token landed ("Token stored in keychain" vs
 //! "Token stored in ~/.bento/credentials").
+//!
+//! Linux is the exception: the only keyring backend we build there is
+//! kernel keyutils, whose entries live in the session keyring and are
+//! gone at logout. The write *succeeds*, so the file fallback never
+//! triggered and the token silently evaporated on reboot. On Linux the
+//! 0600 file is therefore always written, with keyutils kept as a
+//! best-effort fast path so the two never disagree within a session.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -68,13 +75,27 @@ pub fn resolve_cache_token(env_var_name: &str) -> Option<String> {
 /// the [`TokenSink`] lets the caller print the right "stored in …"
 /// line without re-probing.
 pub fn store_cache_token(jwt: &str) -> Result<TokenSink> {
-    match keychain_write(jwt) {
-        Ok(()) => Ok(TokenSink::Keychain),
-        Err(e) => {
-            tracing::debug!("keychain write failed ({e:#}), falling back to file");
-            let path = file_fallback_write(jwt)
-                .context("writing ~/.bento/credentials after keychain failure")?;
-            Ok(TokenSink::File(path))
+    #[cfg(target_os = "linux")]
+    {
+        let path = file_fallback_write(jwt).context("writing ~/.bento/credentials")?;
+        // Keeps the (session-scoped) keyutils copy in step with the file
+        // so the read path, which prefers the keychain, can't serve a
+        // token the user just replaced.
+        if let Err(e) = keychain_write(jwt) {
+            tracing::debug!("keyutils write failed ({e:#}); the 0600 file is authoritative");
+        }
+        Ok(TokenSink::File(path))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        match keychain_write(jwt) {
+            Ok(()) => Ok(TokenSink::Keychain),
+            Err(e) => {
+                tracing::debug!("keychain write failed ({e:#}), falling back to file");
+                let path = file_fallback_write(jwt)
+                    .context("writing ~/.bento/credentials after keychain failure")?;
+                Ok(TokenSink::File(path))
+            }
         }
     }
 }
@@ -120,26 +141,64 @@ fn file_fallback_read() -> Option<String> {
 fn file_fallback_write(jwt: &str) -> Result<PathBuf> {
     let path = file_fallback_path()
         .ok_or_else(|| anyhow::anyhow!("can't resolve HOME for credentials fallback"))?;
+    write_token_file(&path, jwt)?;
+    Ok(path)
+}
+
+/// Write `jwt` to `path` as a 0600 file, creating the parent directory.
+/// Split out from [`file_fallback_write`] so the permission handling is
+/// testable without a `$HOME` override.
+fn write_token_file(path: &Path, jwt: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&path)
+            .open(path)
             .with_context(|| format!("opening {} (0600)", path.display()))?;
+        // `.mode()` only applies when open() creates the file — a
+        // credentials file left world-readable by an older bento (or by
+        // a careless editor) would keep those bits forever otherwise.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("tightening permissions on {}", path.display()))?;
         f.write_all(jwt.as_bytes())
             .with_context(|| format!("writing {}", path.display()))?;
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(&path, jwt).with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(path, jwt).with_context(|| format!("writing {}", path.display()))?;
     }
-    Ok(path)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_is_0600_even_when_it_already_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("credentials");
+
+        write_token_file(&path, "first.jwt").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+
+        // A pre-existing loose file must be tightened, not left as-is:
+        // OpenOptions::mode() is only consulted on creation.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_token_file(&path, "second.jwt").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second.jwt");
+    }
 }

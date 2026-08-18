@@ -31,8 +31,10 @@ url.workspace = true
 # dance, so reqwest is cheaper than dragging object_store for it.
 reqwest.workspace = true
 # OS keychain + HOME resolution for the `bento login` token path.
-# Read-side of the resolver (env → keychain → file fallback) lives
-# alongside the bearer remote that consumes the token.
+# Read-side of the resolver (env → keychain → file) lives alongside the
+# bearer remote that consumes the token. On Linux the only backend we
+# build is kernel keyutils, which is session-scoped — see token.rs for
+# why the 0600 file is always written there.
 keyring.workspace = true
 dirs.workspace = true
 # Unique-per-writer temp files: two processes putting the same key must
