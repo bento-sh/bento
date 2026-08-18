@@ -16,7 +16,8 @@ use bento_adapters::{
     IntegrationTask, IntegrationTaskKind, LanguageAdapter,
 };
 use bento_cache::{CacheKey, Hasher, InputManifest, LocalCache, ManifestFile};
-use bento_config::{DishConfig, LoadedDish, Workspace};
+use bento_config::{DishConfig, LoadedDish, RepoConfig, Workspace};
+use bento_toolchain::{Resolution, ResolutionSource, Resolver};
 
 use crate::diff::GitDiff;
 
@@ -266,6 +267,7 @@ impl Planner {
         } else {
             let dep_mixins = crate::cascade::deps_for_key(dish, dep_sigs);
             let container = crate::run::container_key(&self.workspace);
+            let toolchain_pin = resolve_toolchain_pin(loaded, &self.workspace.repo, adapter)?;
             // Track per-task keys as we walk so intra-dish task deps
             // (e.g. `railway:deploy` → `build`) can mix the dep's key
             // into the current task's hash. BTreeMap ordering means
@@ -291,6 +293,7 @@ impl Planner {
                     container: container.as_deref(),
                     task_dep_keys: &task_dep_keys,
                     env_aliases: &opts.env_aliases,
+                    toolchain_pin: toolchain_pin.as_ref(),
                 })?;
                 computed_keys.insert(task.name.clone(), key.as_hex().to_string());
                 let (status, miss_reason) = if is_clean {
@@ -712,6 +715,24 @@ pub(crate) struct KeyInputs<'a> {
     /// Declared → source env-var aliases; the *source* value is hashed
     /// because that's what the child process sees.
     pub env_aliases: &'a BTreeMap<String, String>,
+    /// Resolved `[toolchain]` pin for the dish, or `None` when
+    /// `use_system = true` opted the layer out. See
+    /// [`resolve_toolchain_pin`].
+    pub toolchain_pin: Option<&'a Resolution>,
+}
+
+/// Resolve the dish's toolchain the same way the executor does, so the
+/// cache key can carry it. Pure — no network, no install — so `plan`
+/// and `ci` agree on the key.
+pub(crate) fn resolve_toolchain_pin(
+    loaded: &LoadedDish,
+    repo: &RepoConfig,
+    adapter: Option<&dyn LanguageAdapter>,
+) -> Result<Option<Resolution>> {
+    match adapter {
+        Some(a) => Resolver::resolve(&loaded.dir, &loaded.config, repo, a),
+        None => Ok(None),
+    }
 }
 
 pub(crate) fn compute_key(input: &KeyInputs<'_>) -> Result<(CacheKey, InputManifest)> {
@@ -725,6 +746,7 @@ pub(crate) fn compute_key(input: &KeyInputs<'_>) -> Result<(CacheKey, InputManif
         container,
         task_dep_keys,
         env_aliases,
+        toolchain_pin,
     } = *input;
     let mut hasher = Hasher::new();
     let bento_version = bento_version_major_minor();
@@ -740,6 +762,24 @@ pub(crate) fn compute_key(input: &KeyInputs<'_>) -> Result<(CacheKey, InputManif
     hasher.add_extra("workspace_outputs", &task.workspace_outputs.join("\n"));
     if let Some(c) = container {
         hasher.add_extra("container", c);
+    }
+
+    // The `[toolchain]` pin the executor will honour — source included,
+    // so moving a pin from bento.toml to dish.toml is still a distinct
+    // key even at the same version.
+    let explicitly_pinned = toolchain_pin.is_some_and(|r| {
+        matches!(r.source, ResolutionSource::Dish | ResolutionSource::Repo) && r.is_pinned()
+    });
+    if let Some(r) = toolchain_pin {
+        hasher.add_extra(
+            "toolchain_pin",
+            &format!(
+                "{}:{}:{}",
+                r.source.label(),
+                r.tool,
+                r.version.as_deref().unwrap_or("system")
+            ),
+        );
     }
 
     let mut adapter_id: Option<String> = None;
@@ -759,8 +799,18 @@ pub(crate) fn compute_key(input: &KeyInputs<'_>) -> Result<(CacheKey, InputManif
         // installed toolchain version so a system `go 1.22.3 → 1.22.5`
         // bump invalidates cache entries that would otherwise give a
         // stale hit. Probe is memoised per-adapter-id for the process.
-        if let Some(resolved) = a.resolved_toolchain_fingerprint() {
-            hasher.add_extra("toolchain_resolved", &resolved);
+        //
+        // Skipped under an explicit dish/repo pin: the probe runs on
+        // *bento's* PATH, but the child gets the pinned store install
+        // prepended, so the number would be a version nothing runs —
+        // per-machine key drift for a toolchain that's already
+        // hermetic. (Probing the store install instead isn't an option
+        // here: `bento plan` computes keys before anything is
+        // installed, and plan and ci must agree.)
+        if !explicitly_pinned {
+            if let Some(resolved) = a.resolved_toolchain_fingerprint() {
+                hasher.add_extra("toolchain_resolved", &resolved);
+            }
         }
     }
 
@@ -1386,6 +1436,7 @@ dishes = ["apps/api"]"#,
             container: None,
             task_dep_keys: &[],
             env_aliases: &BTreeMap::new(),
+            toolchain_pin: None,
         })
         .expect("compute_key");
         assert_eq!(
@@ -1393,6 +1444,34 @@ dishes = ["apps/api"]"#,
             Some(host_triple().as_str()),
             "manifest must carry the host triple so a stale cross-arch cache entry is diagnosable",
         );
+    }
+
+    #[test]
+    fn cache_key_changes_when_repo_toolchain_pin_changes() {
+        // Regression: `[toolchain] go = ...` in bento.toml never reached
+        // compute_key, so bumping the pin gave a stale hit.
+        let tmp = two_dish_fixture();
+        let key_with_pin = |pin: &str| {
+            std::fs::write(
+                tmp.path().join("bento.toml"),
+                format!("[toolchain]\ngo = \"{pin}\"\n"),
+            )
+            .unwrap();
+            let (planner, _cache) = planner_with_fresh_cache(tmp.path());
+            let plan = planner.compute(&PlanOptions::default()).unwrap();
+            plan.bentos[0]
+                .dishes
+                .iter()
+                .find(|d| d.name == "sample-api")
+                .unwrap()
+                .tasks
+                .iter()
+                .find(|t| t.name == "build")
+                .unwrap()
+                .key
+                .clone()
+        };
+        assert_ne!(key_with_pin("1.22.3"), key_with_pin("1.21.0"));
     }
 
     #[test]

@@ -165,6 +165,11 @@ fn primary_tool_name(adapter: &dyn LanguageAdapter) -> String {
         // Both python adapters share one toolchain — uv-managed Python
         // works for either pip-based or uv-based dishes.
         "python" | "python-uv" => "python".to_string(),
+        // Adapter id names the build tool, the pin names the runtime —
+        // must match what each adapter's `required_toolchain` emits, or
+        // the documented `[toolchain] rust`/`java` pins never resolve.
+        "cargo" => "rust".to_string(),
+        "maven" | "gradle" => "java".to_string(),
         // Fallback: use the adapter's own id. Lets future adapters work
         // without a registry change here.
         other => other.to_string(),
@@ -392,6 +397,29 @@ mod tests {
         assert_eq!(r.tool, "deno");
         assert_eq!(r.version.as_deref(), Some("1.46.0"));
         assert_eq!(r.source, ResolutionSource::Repo);
+    }
+
+    #[test]
+    fn build_tool_adapters_resolve_their_runtime_pin() {
+        // Regression: 'cargo' looked up a `cargo` pin and 'maven'/'gradle'
+        // a `maven`/`gradle` pin, but the adapters emit `rust` / `java`
+        // ToolVersions and the docs pin those names.
+        for (id, tool, version) in [
+            ("cargo", "rust", "1.79.0"),
+            ("maven", "java", "21"),
+            ("gradle", "java", "21"),
+        ] {
+            let repo = make_repo_with(&[("rust", "1.79.0"), ("java", "21")], false);
+            let adapter = StubAdapter {
+                id,
+                from_project: None,
+            };
+            let r = Resolver::resolve(&PathBuf::from("."), &DishConfig::default(), &repo, &adapter)
+                .unwrap()
+                .unwrap();
+            assert_eq!(r.tool, tool, "adapter {id}");
+            assert_eq!(r.version.as_deref(), Some(version), "adapter {id}");
+        }
     }
 
     /// Sanity: real GoAdapter against an in-memory-ish dish dir reads go.mod.

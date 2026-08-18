@@ -817,6 +817,8 @@ impl Executor {
         let dep_mixins = crate::cascade::deps_for_key(&loaded.config, dep_sigs);
 
         let container = container_key(&self.workspace);
+        let toolchain_pin =
+            crate::plan::resolve_toolchain_pin(loaded, &self.workspace.repo, adapter)?;
 
         // Tracks computed keys within this dish so an integration task
         // with `depends_on = ["build"]` (railway:deploy, cloudflare
@@ -912,6 +914,7 @@ impl Executor {
                 container: container.as_deref(),
                 task_dep_keys: &task_dep_keys,
                 env_aliases: &opts.secret_aliases,
+                toolchain_pin: toolchain_pin.as_ref(),
             })?;
             computed_task_keys.insert(task.name.clone(), key.as_hex().to_string());
 
@@ -3695,6 +3698,7 @@ run = "true"
                 container,
                 task_dep_keys: &[],
                 env_aliases: &Default::default(),
+                toolchain_pin: None,
             })
             .unwrap()
             .0
@@ -3759,6 +3763,7 @@ run = "true"
                 container: None,
                 task_dep_keys,
                 env_aliases: &Default::default(),
+                toolchain_pin: None,
             })
             .unwrap()
             .0

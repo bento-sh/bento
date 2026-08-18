@@ -167,6 +167,10 @@ Per-dish `dish.toml` `[toolchain]` overrides these.
 
 Without a `[toolchain]` block, each adapter still detects a pin from the project's own version files and folds it into the cache key. Those files resolve from the dish dir upward, stopping at the repo root (a directory holding `.git` or `bento.toml`), so one `.nvmrc` / `.tool-versions` / `rust-toolchain.toml` / `.python-version` / `.ruby-version` at the top of a monorepo covers every dish beneath it. nvm's floating aliases — `lts/*`, `node`, `latest`, `stable` — mean *no* pin; bento falls through to the next signal rather than keying on a version that changes underneath it. `lts/<codename>` resolves to its major.
 
+Pin keys are the *runtime* name, not the adapter id: `rust` (cargo dishes), `java` (maven / gradle dishes), `node` (npm / pnpm / yarn dishes), `go`, `python`, `bun`, `deno`, `ruby`, `php`.
+
+With an explicit pin in force, the key carries the pin (source + version) and bento stops hashing the host's `<tool> --version` — that binary isn't what runs, and hashing it would drift the key per machine. Unpinned dishes (adapter-detected or system-resolved) still hash the probe so patch-level host drift invalidates.
+
 ### `[plugins]`
 
 Filters applied to subprocess plugin discovery (binaries on `$PATH` matching `bento-adapter-<id>`). See [plugins.md](./plugins.md) for the full plugin protocol.
