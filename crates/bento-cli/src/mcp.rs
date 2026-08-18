@@ -33,8 +33,14 @@
 //! Re-running `bento mcp install` updates the existing record rather
 //! than creating a duplicate.
 //!
-//! Writes are atomic (tmp file in the same dir, then rename). Pre-
-//! existing user content under other server keys is preserved.
+//! Writes are atomic (tmp file in the same dir, then rename) and
+//! inherit the target's mode. Pre-existing user content under other
+//! server keys is preserved; `//` and `/* */` comments (Zed's
+//! settings.json ships with them) are tolerated on read, and a
+//! commented file is spliced rather than re-serialised when we're
+//! adding a top-level key. Claude Code's `~/.claude.json` is written
+//! through `claude mcp add` whenever that CLI is on PATH — it's the
+//! owner of that file and a live session rewrites it constantly.
 
 use std::path::{Path, PathBuf};
 
@@ -267,20 +273,44 @@ pub fn install_one(
         // Auto is resolved up-stack into a concrete client; reaching
         // install_one with Auto is a programming error.
         McpClient::Auto => anyhow::bail!("install_one called with Auto — caller must expand"),
-        McpClient::ClaudeCode
-        | McpClient::ClaudeDesktop
-        | McpClient::Cursor
-        | McpClient::Windsurf => {
-            install_json_object(path, "mcpServers", server_name, workspace, existed_before)?
+        McpClient::ClaudeCode => {
+            let entry = build_entry(workspace);
+            if json_entry_matches(path, "mcpServers", server_name, &entry, existed_before)? {
+                InstallAction::Unchanged
+            } else if let Some(action) = (!cfg!(test))
+                // `claude mcp add` writes the real ~/.claude.json —
+                // never from a unit test's tempdir fixture.
+                .then(|| claude_cli_install(path, server_name, workspace, existed_before))
+                .flatten()
+            {
+                action
+            } else {
+                install_json_object(path, "mcpServers", server_name, entry, existed_before)?
+            }
         }
+        McpClient::ClaudeDesktop | McpClient::Cursor | McpClient::Windsurf => install_json_object(
+            path,
+            "mcpServers",
+            server_name,
+            build_entry(workspace),
+            existed_before,
+        )?,
         McpClient::Zed => install_json_object(
             path,
             "context_servers",
             server_name,
-            workspace,
+            build_entry(workspace),
             existed_before,
         )?,
-        McpClient::Opencode => install_opencode(path, server_name, workspace, existed_before)?,
+        // OpenCode's top-level key is `mcp` and `command` is a single
+        // array (binary + args) with a `type` discriminator.
+        McpClient::Opencode => install_json_object(
+            path,
+            "mcp",
+            server_name,
+            opencode_entry(workspace),
+            existed_before,
+        )?,
         McpClient::Codex => install_codex(path, server_name, workspace, existed_before)?,
     };
 
@@ -292,39 +322,98 @@ pub fn install_one(
     })
 }
 
+/// True when the config already carries exactly the entry we'd write
+/// — i.e. the install is a no-op. Read-only, so it's safe to call
+/// before delegating the write to another process.
+fn json_entry_matches(
+    path: &Path,
+    top_key: &str,
+    server_name: &str,
+    entry: &Value,
+    existed_before: bool,
+) -> Result<bool> {
+    let loaded = read_json_or_empty(path, existed_before)?;
+    Ok(loaded.root.get(top_key).and_then(|v| v.get(server_name)) == Some(entry))
+}
+
+/// Hand the write to `claude mcp add` when the Claude Code CLI is on
+/// PATH. `~/.claude.json` is Claude Code's whole user-state file and
+/// a live session rewrites it continuously, so a read-modify-write
+/// from here can drop whatever the session flushed in between; the
+/// CLI owns that file and serialises against itself. `None` ⇒ no
+/// usable `claude` on PATH, caller falls back to the file writer.
+fn claude_cli_install(
+    path: &Path,
+    server_name: &str,
+    workspace: Option<&Path>,
+    existed_before: bool,
+) -> Option<InstallAction> {
+    let scope = if path.file_name().is_some_and(|n| n == ".mcp.json") {
+        "project"
+    } else {
+        "user"
+    };
+    let mut add: Vec<String> = [
+        "mcp",
+        "add",
+        "--scope",
+        scope,
+        server_name,
+        "--",
+        "bento-mcp",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if let Some(ws) = workspace {
+        add.push("--workspace".into());
+        add.push(ws.display().to_string());
+    }
+    let claude = |args: &[String]| {
+        std::process::Command::new("claude")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+    };
+
+    if claude(&add).is_some() {
+        return Some(if existed_before {
+            InstallAction::Added
+        } else {
+            InstallAction::Created
+        });
+    }
+    // `claude mcp add` refuses to shadow an existing name ("already
+    // exists in <scope> config"), so an update is remove-then-add.
+    let remove: Vec<String> = ["mcp", "remove", "--scope", scope, server_name]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    claude(&remove)?;
+    claude(&add).map(|_| InstallAction::Updated)
+}
+
 /// JSON writer for clients shaped `{ "<top_key>": { "<server_name>":
-/// { "command": "bento-mcp", "args": [...] } } }`. Covers Claude
-/// Code, Claude Desktop, Cursor, Windsurf (`mcpServers`), and Zed
-/// (`context_servers`).
+/// <entry> } }`. Covers Claude Desktop, Cursor, Windsurf
+/// (`mcpServers`), Zed (`context_servers`), OpenCode (`mcp`), and
+/// Claude Code when its CLI isn't on PATH.
 fn install_json_object(
     path: &Path,
     top_key: &str,
     server_name: &str,
-    workspace: Option<&Path>,
+    entry: Value,
     existed_before: bool,
 ) -> Result<InstallAction> {
-    let mut root: Value = read_json_or_empty(path, existed_before)?;
-    if !root.is_object() {
+    let loaded = read_json_or_empty(path, existed_before)?;
+    let Some(root_obj) = loaded.root.as_object() else {
         anyhow::bail!(
             "expected a JSON object at the root of {} (got: {})",
             path.display(),
-            kind_of(&root),
+            kind_of(&loaded.root),
         );
-    }
-
-    let entry = build_entry(workspace);
-    let prior = root.get(top_key).and_then(|v| v.get(server_name)).cloned();
-
-    let action = decide_action(prior.as_ref(), &entry, existed_before);
-    if action == InstallAction::Unchanged {
-        return Ok(action);
-    }
-
-    {
-        let obj = root
-            .as_object_mut()
-            .expect("checked above: root is an object");
-        let servers = obj.entry(top_key.to_string()).or_insert_with(|| json!({}));
+    };
+    if let Some(servers) = root_obj.get(top_key) {
         if !servers.is_object() {
             anyhow::bail!(
                 "expected `{}` to be an object in {} (got: {})",
@@ -333,71 +422,80 @@ fn install_json_object(
                 kind_of(servers),
             );
         }
-        servers
-            .as_object_mut()
-            .expect("checked above")
-            .insert(server_name.to_string(), entry);
     }
 
-    ensure_parent(path)?;
-    write_json_atomic(path, &root)?;
-    Ok(action)
-}
-
-/// JSON writer for OpenCode. Top-level key is `mcp` (not
-/// `mcpServers`), `command` is a single array (binary + args), env
-/// is `environment`, entries carry `type: "local"`.
-fn install_opencode(
-    path: &Path,
-    server_name: &str,
-    workspace: Option<&Path>,
-    existed_before: bool,
-) -> Result<InstallAction> {
-    let mut root: Value = read_json_or_empty(path, existed_before)?;
-    if !root.is_object() {
-        anyhow::bail!(
-            "expected a JSON object at the root of {} (got: {})",
-            path.display(),
-            kind_of(&root),
-        );
-    }
-
-    let mut command: Vec<String> = vec!["bento-mcp".into()];
-    if let Some(ws) = workspace {
-        command.push("--workspace".into());
-        command.push(ws.display().to_string());
-    }
-    let entry = json!({
-        "type": "local",
-        "command": command,
-        "enabled": true,
-    });
-
-    let prior = root.get("mcp").and_then(|v| v.get(server_name)).cloned();
-    let action = decide_action(prior.as_ref(), &entry, existed_before);
+    let prior = root_obj.get(top_key).and_then(|v| v.get(server_name));
+    let action = decide_action(prior, &entry, existed_before);
     if action == InstallAction::Unchanged {
         return Ok(action);
     }
 
-    {
-        let obj = root.as_object_mut().expect("root is an object");
-        let servers = obj.entry("mcp".to_string()).or_insert_with(|| json!({}));
-        if !servers.is_object() {
-            anyhow::bail!(
-                "expected `mcp` to be an object in {} (got: {})",
-                path.display(),
-                kind_of(servers),
-            );
+    ensure_parent(path)?;
+
+    // A commented config (Zed ships one; `.mcp.json` gets hand-edited)
+    // survives the round-trip only if we never re-serialise it: splice
+    // the new top-level key in as text instead. When the key already
+    // exists we can't splice safely, so the user's comments are the
+    // cost of the update — take a copy first so nothing is lost.
+    // ponytail: a span-aware JSONC editor would cover the second case
+    // too; not worth it until someone hits it.
+    if loaded.had_comments {
+        if root_obj.get(top_key).is_none() {
+            let spliced = splice_top_level(
+                &loaded.raw,
+                top_key,
+                &json!({ server_name: entry }),
+                root_obj.is_empty(),
+            )?;
+            write_text_atomic(path, &spliced)?;
+            return Ok(action);
         }
-        servers
-            .as_object_mut()
-            .expect("checked above")
-            .insert(server_name.to_string(), entry);
+        let backup = path.with_file_name(format!(
+            "{}.bento-backup",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("config"),
+        ));
+        std::fs::copy(path, &backup)
+            .with_context(|| format!("backing up {} → {}", path.display(), backup.display()))?;
+        eprintln!(
+            "warning: {} contains comments that this update drops — original copied to {}",
+            path.display(),
+            backup.display(),
+        );
     }
 
-    ensure_parent(path)?;
+    let mut root = loaded.root;
+    root.as_object_mut()
+        .expect("checked above: root is an object")
+        .entry(top_key.to_string())
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("checked above: top_key is an object or absent")
+        .insert(server_name.to_string(), entry);
+
     write_json_atomic(path, &root)?;
     Ok(action)
+}
+
+/// Splice `{ "<top_key>": <value> }` into `raw` right after the root
+/// object's `{`, leaving every other byte (comments included) alone.
+/// Only valid when `top_key` is absent from the document.
+fn splice_top_level(raw: &str, top_key: &str, value: &Value, root_empty: bool) -> Result<String> {
+    let brace = crate::jsonc::strip_comments(raw)
+        .find('{')
+        .context("no root `{` found")?;
+    let block = serde_json::to_string_pretty(&json!({ top_key: value }))
+        .context("serialising MCP config to JSON")?;
+    // `{\n  "<top_key>": …\n}` → the inner lines, without the braces.
+    let inner = block[1..block.len() - 1].trim_end();
+    Ok(format!(
+        "{}{}{}{}",
+        &raw[..=brace],
+        inner,
+        if root_empty { "" } else { "," },
+        &raw[brace + 1..],
+    ))
 }
 
 /// TOML writer for Codex CLI. Entries land at
@@ -477,15 +575,38 @@ fn tables_equivalent(a: &toml_edit::Table, b: &toml_edit::Table) -> bool {
     norm(a) == norm(b)
 }
 
-fn read_json_or_empty(path: &Path, existed_before: bool) -> Result<Value> {
-    if !existed_before {
-        return Ok(json!({}));
+/// A client config as read from disk. `raw` is the untouched file
+/// text (empty when the file is new) — kept so a commented document
+/// can be updated without re-serialising it.
+struct LoadedJson {
+    root: Value,
+    raw: String,
+    had_comments: bool,
+}
+
+fn read_json_or_empty(path: &Path, existed_before: bool) -> Result<LoadedJson> {
+    let raw = if existed_before {
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+    } else {
+        String::new()
+    };
+    if raw.trim().is_empty() {
+        return Ok(LoadedJson {
+            root: json!({}),
+            raw,
+            had_comments: false,
+        });
     }
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    if bytes.is_empty() {
-        return Ok(json!({}));
-    }
-    serde_json::from_slice(&bytes).with_context(|| format!("parsing JSON in {}", path.display()))
+    // Zed's settings.json ships with `//` comments and `.mcp.json`
+    // gets hand-annotated; serde_json rejects both outright.
+    let stripped = crate::jsonc::strip_comments(&raw);
+    let root = serde_json::from_str(&stripped)
+        .with_context(|| format!("parsing JSON in {}", path.display()))?;
+    Ok(LoadedJson {
+        had_comments: stripped != raw,
+        root,
+        raw,
+    })
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {
@@ -503,6 +624,19 @@ fn decide_action(prior: Option<&Value>, want: &Value, existed_before: bool) -> I
         None if existed_before => InstallAction::Added,
         None => InstallAction::Created,
     }
+}
+
+fn opencode_entry(workspace: Option<&Path>) -> Value {
+    let mut command: Vec<String> = vec!["bento-mcp".into()];
+    if let Some(ws) = workspace {
+        command.push("--workspace".into());
+        command.push(ws.display().to_string());
+    }
+    json!({
+        "type": "local",
+        "command": command,
+        "enabled": true,
+    })
 }
 
 fn build_entry(workspace: Option<&Path>) -> Value {
@@ -541,11 +675,29 @@ fn write_text_atomic(path: &Path, body: &str) -> Result<()> {
             .and_then(|n| n.to_str())
             .unwrap_or("config")
     ));
-    std::fs::write(&tmp_path, body.as_bytes())
-        .with_context(|| format!("writing {}", tmp_path.display()))?;
+    write_private(&tmp_path, body).with_context(|| format!("writing {}", tmp_path.display()))?;
+    // Inherit the config's own mode: `~/.claude.json` is 0600 and
+    // holds session credentials — a default-mode rewrite would widen
+    // it to 0644.
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
+    }
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("renaming {} → {}", tmp_path.display(), path.display()))?;
     Ok(())
+}
+
+/// Create (or truncate) `path` owner-readable only, then write `body`.
+/// The mode is set at open time so the temp file is never briefly
+/// world-readable.
+fn write_private(path: &Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(path)?.write_all(body.as_bytes())
 }
 
 pub fn run(
@@ -846,6 +998,74 @@ mod tests {
         assert_eq!(v["context_servers"]["bento"]["command"], "bento-mcp");
         // No mcpServers key — Zed uses context_servers.
         assert!(v.get("mcpServers").is_none());
+    }
+
+    #[test]
+    fn zed_settings_with_comments_are_spliced_not_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        // Real Zed settings.json: JSONC, heavily commented.
+        let original = "{\n  // Theme picked by hand\n  \"theme\": \"One Dark\",\n  /* keymap\n     notes */\n  \"vim_mode\": false\n}\n";
+        std::fs::write(&path, original).unwrap();
+
+        let r = install_one(McpClient::Zed, &path, "bento", None).unwrap();
+        assert_eq!(r.action, InstallAction::Added);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("// Theme picked by hand"), "got: {body}");
+        assert!(body.contains("/* keymap"), "got: {body}");
+        let v: Value = serde_json::from_str(&crate::jsonc::strip_comments(&body)).unwrap();
+        assert_eq!(v["theme"], "One Dark");
+        assert_eq!(v["vim_mode"], false);
+        assert_eq!(v["context_servers"]["bento"]["command"], "bento-mcp");
+
+        // Idempotent even though the file is JSONC.
+        let r2 = install_one(McpClient::Zed, &path, "bento", None).unwrap();
+        assert_eq!(r2.action, InstallAction::Unchanged);
+    }
+
+    #[test]
+    fn comment_dropping_update_leaves_a_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        // The top-level key already exists, so the entry can't be
+        // spliced in — the rewrite drops comments, hence the copy.
+        let original =
+            "{\n  // keep me\n  \"context_servers\": {\"other\": {\"command\": \"x\"}}\n}\n";
+        std::fs::write(&path, original).unwrap();
+
+        let r = install_one(McpClient::Zed, &path, "bento", None).unwrap();
+        assert_eq!(r.action, InstallAction::Added);
+        let backup =
+            std::fs::read_to_string(tmp.path().join("settings.json.bento-backup")).unwrap();
+        assert_eq!(backup, original);
+        let v = read_json(&path);
+        assert_eq!(v["context_servers"]["other"]["command"], "x");
+        assert_eq!(v["context_servers"]["bento"]["command"], "bento-mcp");
+    }
+
+    #[test]
+    fn empty_root_object_splices_without_a_stray_comma() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        std::fs::write(&path, "{ /* nothing here yet */ }").unwrap();
+        install_one(McpClient::Cursor, &path, "bento", None).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        let v: Value = serde_json::from_str(&crate::jsonc::strip_comments(&body)).unwrap();
+        assert_eq!(v["mcpServers"]["bento"]["command"], "bento-mcp");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_preserves_the_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("claude.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        install_one(McpClient::Cursor, &path, "bento", None).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "rewrite widened the config's mode");
     }
 
     #[test]

@@ -122,7 +122,7 @@ bento mcp install claude-code    # one client at a time (positional arg)
 bento mcp install codex --local  # project-scoped (Codex trusted-projects flow)
 ```
 
-`bento mcp install --help` lists every supported client and the file it writes.
+`bento mcp install --help` lists every supported client and the file it writes. Config files with `//` or `/* */` comments (Zed ships a commented `settings.json`) are read as JSONC; when bento only has to add a top-level key it splices the entry in as text so your comments survive.
 
 ### Claude Desktop
 
@@ -149,7 +149,7 @@ The MCP surface is a subset of the CLI: write-path verbs (`init`, `dish add`, `m
 
 ### Claude Code
 
-Run `bento mcp install claude-code` (or `bento mcp install claude-code --local` for project scope). The installer writes:
+Run `bento mcp install claude-code` (or `bento mcp install claude-code --local` for project scope). When the `claude` CLI is on `PATH`, the registration is delegated to `claude mcp add --scope user|project` — `~/.claude.json` holds all of Claude Code's user state and a live session rewrites it constantly, so its own CLI does the write. Without `claude` on `PATH`, bento edits the file itself (atomically, keeping the file's mode). Either way the entry lands in:
 
 - User-global → `~/.claude.json` (single dotfile holding all Claude Code state, including `mcpServers`).
 - Project-local → `.mcp.json` at the repo root (Claude Code reads this when it lives next to `.claude/settings.json`).

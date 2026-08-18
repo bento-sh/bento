@@ -3,6 +3,7 @@ mod cli;
 mod errors;
 mod init;
 mod json;
+mod jsonc;
 mod linear_notify;
 mod login;
 mod mcp;
