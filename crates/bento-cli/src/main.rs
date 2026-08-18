@@ -21,6 +21,7 @@ mod style;
 mod toolchain;
 mod why;
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -917,7 +918,7 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
 
     let registry = Arc::new(plugins::build_registry(&workspace));
 
-    let mut targets: Vec<(bento_config::LoadedDish, Vec<String>)> = Vec::new();
+    let mut targets: Vec<(bento_config::LoadedDish, Vec<String>, Option<OsString>)> = Vec::new();
     for dish_ref in &bento.config.dishes {
         let loaded = workspace
             .dishes_by_path
@@ -940,7 +941,12 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
                 }
             }
         }
-        targets.push((loaded, globs));
+        // Toolchains resolve here, before the per-dish fan-out: the
+        // resolver installs missing pins and mutates PATH, which is a
+        // data race off the main thread (same reason the executor
+        // resolves ahead of its own fan-out).
+        let path_env = bento_core::pinned_path_env(&workspace, &loaded, adapter)?;
+        targets.push((loaded, globs, path_env));
     }
 
     if targets.is_empty() {
@@ -952,7 +958,7 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
         targets.len(),
         if targets.len() == 1 { "" } else { "es" },
     );
-    for (loaded, _) in &targets {
+    for (loaded, _, _) in &targets {
         println!(
             "  [{:<10}] {}",
             loaded.config.name,
@@ -963,7 +969,9 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
 
     let handles: Vec<_> = targets
         .into_iter()
-        .map(|(loaded, globs)| thread::spawn(move || supervise_dish(loaded, globs)))
+        .map(|(loaded, globs, path_env)| {
+            thread::spawn(move || supervise_dish(loaded, globs, path_env))
+        })
         .collect();
 
     // Threads loop forever; join blocks until one panics or the process
@@ -976,12 +984,16 @@ fn run_serve(global: &GlobalFlags, bento_name: String) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-fn supervise_dish(loaded: bento_config::LoadedDish, globs: Vec<String>) -> anyhow::Result<()> {
+fn supervise_dish(
+    loaded: bento_config::LoadedDish,
+    globs: Vec<String>,
+    path_env: Option<OsString>,
+) -> anyhow::Result<()> {
     let label = loaded.config.name.clone();
     let serve_run = loaded.config.serve.as_ref().unwrap().run.clone();
     let dish_dir = loaded.dir.clone();
 
-    let mut child = spawn_serve_piped(&dish_dir, &serve_run, &label)?;
+    let mut child = spawn_serve_piped(&dish_dir, &serve_run, &label, path_env.as_deref())?;
     let watcher =
         bento_watch::DishWatcher::new(&dish_dir, &globs, std::time::Duration::from_millis(200))?;
 
@@ -1002,7 +1014,7 @@ fn supervise_dish(loaded: bento_config::LoadedDish, globs: Vec<String>) -> anyho
         );
         let _ = child.kill();
         let _ = child.wait();
-        child = spawn_serve_piped(&dish_dir, &serve_run, &label)?;
+        child = spawn_serve_piped(&dish_dir, &serve_run, &label, path_env.as_deref())?;
     }
 
     let _ = child.kill();
@@ -1014,17 +1026,20 @@ fn spawn_serve_piped(
     dish_dir: &std::path::Path,
     run: &str,
     label: &str,
+    path_env: Option<&OsStr>,
 ) -> anyhow::Result<std::process::Child> {
     use anyhow::Context;
     use std::process::Stdio;
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c")
         .arg(run)
         .current_dir(dish_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawning `{run}`"))?;
+        .stderr(Stdio::piped());
+    if let Some(path) = path_env {
+        cmd.env("PATH", path);
+    }
+    let mut child = cmd.spawn().with_context(|| format!("spawning `{run}`"))?;
 
     // Forward child stdout / stderr to ours, prefixed with the dish label.
     if let Some(out) = child.stdout.take() {
@@ -1097,7 +1112,8 @@ fn run_dev(global: &GlobalFlags, dish_name: String) -> anyhow::Result<i32> {
     println!("           → `{}`", serve.run);
     println!();
 
-    let mut child = spawn_serve(&loaded.dir, &serve.run)?;
+    let path_env = bento_core::pinned_path_env(&workspace, loaded, adapter)?;
+    let mut child = spawn_serve(&loaded.dir, &serve.run, path_env.as_deref())?;
 
     while let Some(batch) = watcher.next_batch() {
         let first = batch
@@ -1116,7 +1132,7 @@ fn run_dev(global: &GlobalFlags, dish_name: String) -> anyhow::Result<i32> {
         );
         let _ = child.kill();
         let _ = child.wait();
-        child = spawn_serve(&loaded.dir, &serve.run)?;
+        child = spawn_serve(&loaded.dir, &serve.run, path_env.as_deref())?;
     }
 
     let _ = child.kill();
@@ -1124,14 +1140,18 @@ fn run_dev(global: &GlobalFlags, dish_name: String) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-fn spawn_serve(dish_dir: &std::path::Path, run: &str) -> anyhow::Result<std::process::Child> {
+fn spawn_serve(
+    dish_dir: &std::path::Path,
+    run: &str,
+    path_env: Option<&OsStr>,
+) -> anyhow::Result<std::process::Child> {
     use anyhow::Context;
-    std::process::Command::new("sh")
-        .arg("-c")
-        .arg(run)
-        .current_dir(dish_dir)
-        .spawn()
-        .with_context(|| format!("spawning `{run}`"))
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(run).current_dir(dish_dir);
+    if let Some(path) = path_env {
+        cmd.env("PATH", path);
+    }
+    cmd.spawn().with_context(|| format!("spawning `{run}`"))
 }
 
 /// Drive `bento run <dish> <task> -- <args...>` — invoke a named
@@ -1197,6 +1217,17 @@ fn run_task(
         cmd.arg(a);
     }
     cmd.current_dir(&loaded.dir);
+    // Same toolchain semantics as a cached task: an ad-hoc task on a
+    // dish pinning go 1.22 must not silently run against whatever go
+    // happens to be on the host PATH.
+    let registry = plugins::build_registry(&workspace);
+    let adapter = match &loaded.config.language {
+        Some(id) => registry.by_id(id),
+        None => registry.detect(&loaded.dir),
+    };
+    if let Some(path) = bento_core::pinned_path_env(&workspace, loaded, adapter)? {
+        cmd.env("PATH", path);
+    }
     let status = cmd
         .status()
         .with_context(|| format!("spawning `{run}` in {}", loaded.dir.display()))?;

@@ -30,9 +30,9 @@ pub use plan::{
     PlannedDish, PlannedTask, Planner, TaskStatus, WorkspaceNotFound,
 };
 pub use run::{
-    ci_at, notify_at, resolve_target, CiOptions, ExecutedBento, ExecutedDish, ExecutedTask,
-    ExecutionReport, ExecutionSummary, Executor, InstallRecord, TargetRef, TargetRefError,
-    TaskOutcome,
+    ci_at, notify_at, pinned_path_env, resolve_target, CiOptions, ExecutedBento, ExecutedDish,
+    ExecutedTask, ExecutionReport, ExecutionSummary, Executor, InstallRecord, TargetRef,
+    TargetRefError, TaskOutcome,
 };
 
 // Re-exports so the CLI can compose these without a direct dep on

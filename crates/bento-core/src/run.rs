@@ -1439,16 +1439,29 @@ impl Executor {
 
     /// Resolve + install (best-effort) toolchains for `loaded`. Returns
     /// the directories that should be prepended to child-process `PATH`.
-    ///
-    /// Auto-install only triggers when an explicit pin is set (dish or
-    /// repo `[toolchain]`). Adapter-detected versions (e.g. parsed from
-    /// `go.mod`) are *not* auto-installed — they only feed the cache key.
     fn ensure_toolchain(
         &self,
         loaded: &LoadedDish,
         adapter: Option<&dyn LanguageAdapter>,
     ) -> Result<Vec<PathBuf>> {
-        let installer = match &self.installer {
+        ensure_toolchain_paths(self.installer.as_ref(), &self.workspace, loaded, adapter)
+    }
+}
+
+/// Resolve + install (best-effort) the toolchain `loaded` pins, and
+/// return the directories to prepend to a child process's `PATH`.
+///
+/// Auto-install only triggers when an explicit pin is set (dish or
+/// repo `[toolchain]`). Adapter-detected versions (e.g. parsed from
+/// `go.mod`) are *not* auto-installed — they only feed the cache key.
+fn ensure_toolchain_paths(
+    installer: Option<&Installer>,
+    workspace: &Workspace,
+    loaded: &LoadedDish,
+    adapter: Option<&dyn LanguageAdapter>,
+) -> Result<Vec<PathBuf>> {
+    {
+        let installer = match installer {
             Some(i) => i,
             None => return Ok(Vec::new()),
         };
@@ -1458,7 +1471,7 @@ impl Executor {
         };
 
         let resolution =
-            match Resolver::resolve(&loaded.dir, &loaded.config, &self.workspace.repo, adapter)? {
+            match Resolver::resolve(&loaded.dir, &loaded.config, &workspace.repo, adapter)? {
                 Some(r) => r,
                 None => return Ok(Vec::new()),
             };
@@ -1509,8 +1522,7 @@ impl Executor {
         // for the primary picks it up via `Command::new(...)`.
         let mut paths: Vec<PathBuf> = Vec::new();
         for co in primary.co_required() {
-            let co_version = self
-                .workspace
+            let co_version = workspace
                 .repo
                 .toolchain
                 .pins
@@ -1542,7 +1554,27 @@ impl Executor {
         paths.push(bin_dir);
         Ok(paths)
     }
+}
 
+/// The `PATH` a child process needs to see the dish's *pinned*
+/// toolchain — the same bin dirs the executor puts in front of a
+/// cached task's shell. `None` when the dish pins nothing, in which
+/// case the caller should leave the inherited `PATH` alone.
+///
+/// Used by the streaming verbs (`bento run` / `dev` / `serve`), which
+/// spawn outside the executor but promise the same toolchain
+/// semantics.
+pub fn pinned_path_env(
+    workspace: &Workspace,
+    loaded: &LoadedDish,
+    adapter: Option<&dyn LanguageAdapter>,
+) -> Result<Option<OsString>> {
+    let installer = Installer::builtin().ok();
+    let paths = ensure_toolchain_paths(installer.as_ref(), workspace, loaded, adapter)?;
+    Ok((!paths.is_empty()).then(|| build_path(&paths)))
+}
+
+impl Executor {
     /// `bento notify` entry point — replays persisted garnish payloads
     /// through each dish's Notify-kind tasks. No Deploy runs. Payloads
     /// come from `.bento/garnish/<bento>/<dish>/*.json` sidecars that

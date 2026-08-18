@@ -341,6 +341,8 @@ Optional. Declares the long-running command for `bento serve <bento>` (every dis
 |-------|------|---------|-------------|
 | `run` | string | required | Long-running command. Bento spawns it, watches the dish's inputs, and restarts on change. |
 
+The command runs with the dish's pinned toolchain in front of `PATH` — same semantics as a cached task.
+
 ### `[integrations.<id>]`
 
 Per-dish config for **integrations** — the second extension point alongside language adapters. Each integration interprets its own block; unknown keys are ignored at load time so fields can be added without bento-config changes. See [deploying.md](./deploying.md) for the full deploy workflow.
