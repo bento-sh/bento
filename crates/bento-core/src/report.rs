@@ -106,9 +106,7 @@ pub fn send(
     let Some(url) = build_endpoint(cache_remote) else {
         return; // no remote, or s3:// — nothing to report to.
     };
-    let Some(env_name) = cache_token_env.filter(|s| !s.is_empty()) else {
-        return; // no env var declared — silent skip.
-    };
+    let env_name = bento_cache::token::token_env_name(cache_token_env);
     let Some(token) = bento_cache::token::resolve_cache_token(env_name) else {
         return; // no token env/keychain/file — silent skip.
     };

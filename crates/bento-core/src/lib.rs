@@ -48,8 +48,9 @@ pub use bento_adapters::{
     LanguageAdapter, ParserId, Severity,
 };
 pub use bento_cache::{
-    build_remote, BearerRemote, CacheKey, InputManifest, LocalCache, ManifestFile, RemoteCache,
-    S3Remote,
+    build_remote,
+    token::{resolve_cache_token, token_env_name},
+    BearerRemote, CacheKey, InputManifest, LocalCache, ManifestFile, RemoteCache, S3Remote,
 };
 pub use bento_config::{LoadedDish, Workspace};
 pub use bento_toolchain::{

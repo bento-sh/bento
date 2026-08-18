@@ -534,20 +534,26 @@ fn check_remote_cache(workspace: &Workspace) -> DoctorCheck {
     // run stays non-network. Here we only confirm the token-env knob is
     // wired, which is a config-time concern.
     if remote.starts_with("bento://") {
-        let token_env = workspace.repo.cache.remote_token_env.as_deref();
-        return match token_env {
-            Some(name) if !name.is_empty() => check_ok(
+        // Resolve exactly as the executor does — env var (defaulted
+        // when unset), then keychain, then ~/.bento/credentials.
+        // Failing on an unset `remote_token_env` used to red-flag every
+        // working `bento login` setup.
+        let name =
+            bento_cache::token::token_env_name(workspace.repo.cache.remote_token_env.as_deref());
+        return match bento_cache::token::resolve_cache_token(name) {
+            Some(_) => check_ok(
                 "cache.remote",
                 format!(
-                    "configured: {remote} (bento hosted cache; token via ${name}; \
-                     run `bento doctor --cloud` for reachability + JWT validation)"
+                    "configured: {remote} (bento hosted cache; token resolved via ${name}, \
+                     keychain, or ~/.bento/credentials; run `bento doctor --cloud` for \
+                     reachability + JWT validation)"
                 ),
             ),
-            _ => check_fail(
+            None => check_fail(
                 "cache.remote",
                 format!(
-                    "configured: {remote} but [cache] remote_token_env is not set — \
-                     name the env var holding the JWT (e.g. remote_token_env = \"BENTO_CACHE_TOKEN\")"
+                    "configured: {remote} but no token found — run `bento login`, or export \
+                     ${name} (rename it with [cache] remote_token_env)"
                 ),
             ),
         };

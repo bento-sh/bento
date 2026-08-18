@@ -62,13 +62,13 @@ pub struct CacheStatus {
     pub local_exists: bool,
     /// Remote cache URL from `[cache] remote`, if configured.
     pub remote_url: Option<String>,
-    /// Env var name holding the remote JWT, if `[cache] remote_token_env`
-    /// is set. The value is never read into prime output.
+    /// Env var name holding the remote JWT — `[cache] remote_token_env`
+    /// or its default. The value is never read into prime output.
     pub remote_token_env: Option<String>,
-    /// `true` when `remote_token_env` is set AND that env var is
-    /// present in the current environment. When false with a
-    /// configured remote, the remote tier will silently degrade to
-    /// local-only.
+    /// `true` when a token resolved from any tier the executor uses:
+    /// the env var, the OS keychain, or `~/.bento/credentials`. When
+    /// false with a configured remote, the remote tier will silently
+    /// degrade to local-only.
     pub remote_token_resolved: bool,
 }
 
@@ -174,13 +174,13 @@ fn collect_cache(ws: &Workspace) -> CacheStatus {
 
     let (remote_url, remote_token_env, remote_token_resolved) = {
         let cache = &ws.repo.cache;
-        let url = cache.remote.clone();
-        let env_name = cache.remote_token_env.clone();
-        let resolved = env_name
-            .as_ref()
-            .map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()).is_some())
-            .unwrap_or(false);
-        (url, env_name, resolved)
+        // Same resolution the executor uses: the env var name is
+        // defaulted when unset, and keychain / ~/.bento/credentials
+        // count as resolved — `bento login` users were told their
+        // token was missing.
+        let name = bento_cache::token::token_env_name(cache.remote_token_env.as_deref());
+        let resolved = bento_cache::token::resolve_cache_token(name).is_some();
+        (cache.remote.clone(), Some(name.to_string()), resolved)
     };
 
     CacheStatus {
@@ -248,12 +248,11 @@ fn recommend_next(
     }
     if cache.remote_url.is_some() && !cache.remote_token_resolved {
         steps.push(format!(
-            "remote cache is configured but {} is not set in the environment — export it or \
-             unset `remote_token_env` in [cache]",
+            "remote cache is configured but no token resolved — run `bento login` or export {}",
             cache
                 .remote_token_env
                 .as_deref()
-                .unwrap_or("the token env var")
+                .unwrap_or(bento_cache::token::DEFAULT_TOKEN_ENV)
         ));
     }
     if plan.misses > 0 && plan.hits == 0 {

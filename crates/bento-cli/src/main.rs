@@ -1500,14 +1500,11 @@ fn load_remote_and_local(
     };
     let region = cache_cfg.remote_region.as_deref();
     let endpoint = cache_cfg.remote_endpoint.as_deref();
-    let token_env = cache_cfg
-        .remote_token_env
-        .as_deref()
-        .unwrap_or("BENTO_CACHE_TOKEN");
     // Same resolver the executor uses (env → keychain → 0600 file), not a
     // bare env read: `bento login` alone used to be enough for `bento ci`
     // but not for `bento cache push`.
-    let token = bento_cache::token::resolve_cache_token(token_env);
+    let token_env = bento_core::token_env_name(cache_cfg.remote_token_env.as_deref());
+    let token = bento_core::resolve_cache_token(token_env);
     let remote = bento_core::build_remote(url, region, endpoint, token.as_deref())?;
     let local_root = bento_core::default_cache_root()?;
     let local = bento_core::LocalCache::new(&local_root);

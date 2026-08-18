@@ -46,6 +46,19 @@ pub enum TokenSink {
     File(PathBuf),
 }
 
+/// Env var consulted when `[cache] remote_token_env` is unset.
+pub const DEFAULT_TOKEN_ENV: &str = "BENTO_CACHE_TOKEN";
+
+/// Env var name to read for a repo, applying the default. Every caller
+/// must go through this: `doctor` used to fail a working config that
+/// relied on the default, and `prime` reported the token unresolved.
+pub fn token_env_name(configured: Option<&str>) -> &str {
+    match configured {
+        Some(name) if !name.is_empty() => name,
+        _ => DEFAULT_TOKEN_ENV,
+    }
+}
+
 /// Read the configured cache token for `bento://` remotes.
 ///
 /// `env_var_name` is what `[cache].remote_token_env` resolved to —
@@ -200,5 +213,12 @@ mod tests {
         write_token_file(&path, "second.jwt").unwrap();
         assert_eq!(mode(&path), 0o600);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second.jwt");
+    }
+
+    #[test]
+    fn token_env_name_defaults_when_unset_or_empty() {
+        assert_eq!(token_env_name(Some("MY_TOKEN")), "MY_TOKEN");
+        assert_eq!(token_env_name(None), DEFAULT_TOKEN_ENV);
+        assert_eq!(token_env_name(Some("")), DEFAULT_TOKEN_ENV);
     }
 }
