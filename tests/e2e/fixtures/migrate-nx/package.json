@@ -1,0 +1,5 @@
+{
+  "name": "migrate-nx",
+  "private": true,
+  "packageManager": "yarn@4.1.0"
+}

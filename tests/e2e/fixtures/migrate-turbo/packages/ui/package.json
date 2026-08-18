@@ -1,0 +1,8 @@
+{
+  "name": "@migrate-turbo/ui",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@migrate-nx/util",
+  "projectType": "library",
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "options": { "outputPath": "{projectRoot}/dist" }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint"
+    }
+  }
+}

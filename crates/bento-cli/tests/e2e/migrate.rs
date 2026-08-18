@@ -22,14 +22,15 @@
 use std::path::Path;
 
 use super::common::{
-    materialize_hand_crafted, materialize_vendored, require_network, run_bento, BentoOutcome,
+    materialize_hand_crafted, materialize_vendored, require_network, require_toolchain, run_bento,
+    BentoOutcome,
 };
 
 /// Run `bento migrate <tool> --force --json` against the materialised
 /// fixture, assert success + that the report claims to have written
 /// files, then run `bento plan --json` against the migrated result and
 /// assert the plan parses + contains at least one dish.
-fn migrate_and_plan(fixture: &str, tool: &str) {
+fn migrate_and_plan(fixture: &str, tool: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let (_tmp, workspace) = materialize_hand_crafted(fixture);
 
     // Step 1 — invoke the migrator.
@@ -104,6 +105,21 @@ fn migrate_and_plan(fixture: &str, tool: &str) {
         "[migrate {tool}] plan reported zero dishes across {} bento(s); migration didn't wire anything in",
         bentos.len(),
     );
+
+    (_tmp, workspace)
+}
+
+/// Read a migrated `dish.toml` and assert it contains each needle.
+fn assert_dish_contains(workspace: &Path, rel: &str, needles: &[&str]) {
+    let path = workspace.join(rel);
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    for needle in needles {
+        assert!(
+            body.contains(needle),
+            "{rel} is missing `{needle}`:\n{body}"
+        );
+    }
 }
 
 fn assert_migrate_succeeded(out: &BentoOutcome, tool: &str, workspace: &Path) {
@@ -125,17 +141,113 @@ fn lerna_workspace_migrates_and_plans() {
 
 #[test]
 fn makefile_migrates_and_plans() {
-    migrate_and_plan("migrate-make", "make");
+    let (_tmp, workspace) = migrate_and_plan("migrate-make", "make");
+    // A Makefile is language-agnostic: emitting a `node-npm`
+    // placeholder made the first `bento build` die in `npm install`
+    // with "Could not read package.json". And Make-only recipe syntax
+    // must never reach a shell — `make` stays the executor.
+    let dish = std::fs::read_to_string(workspace.join("dish.toml")).unwrap();
+    assert!(!dish.contains("language ="), "{dish}");
+    assert!(dish.contains(r#"run = "make build""#), "{dish}");
+    for make_only in ["$(CC)", "$(CFLAGS)", "$(VERSION)"] {
+        assert!(
+            !dish.contains(make_only),
+            "{make_only} leaked into:\n{dish}"
+        );
+    }
+}
+
+/// The migrated Makefile workspace has to *build*, not just plan.
+#[test]
+fn makefile_migration_builds() {
+    if !require_toolchain("make") || !require_toolchain("cc") {
+        return;
+    }
+    let (_tmp, workspace) = migrate_and_plan("migrate-make", "make");
+    let build = run_bento(&workspace, &["build", "--json"]);
+    assert!(
+        !build.stderr.contains("install failed"),
+        "[migrate make → build] install must be a no-op for an adapter-less dish; stderr:\n{}",
+        build.stderr,
+    );
+    assert_eq!(
+        build.exit_code, 0,
+        "[migrate make → build] exit={} stderr=\n{}\nstdout=\n{}",
+        build.exit_code, build.stderr, build.stdout,
+    );
+    assert!(
+        workspace.join("out/hello").exists(),
+        "`make build` should have produced out/hello",
+    );
 }
 
 #[test]
 fn moon_workspace_migrates_and_plans() {
-    migrate_and_plan("migrate-moon", "moon");
+    let (_tmp, workspace) = migrate_and_plan("migrate-moon", "moon");
+    // moon's `options.cache: false` on apps/web's dev task.
+    assert_dish_contains(&workspace, "apps/web/dish.toml", &["[tasks.build]"]);
 }
 
 #[test]
 fn rush_workspace_migrates_and_plans() {
-    migrate_and_plan("migrate-rush", "rush");
+    // rush.json opens with the `/* */` banner `rush init` emits — a
+    // line-comment-only JSONC stripper fails on every real Rush repo.
+    let (_tmp, workspace) = migrate_and_plan("migrate-rush", "rush");
+    assert_dish_contains(
+        &workspace,
+        "apps/web/dish.toml",
+        &[r#"language = "node-pnpm""#, r#"run = "pnpm run build""#],
+    );
+}
+
+#[test]
+fn turbo_workspace_migrates_and_plans() {
+    let (_tmp, workspace) = migrate_and_plan("migrate-turbo", "turbo");
+    // `packageManager: pnpm@…` must win over the node-npm default:
+    // otherwise the first `bento install` runs `npm ci` against a
+    // pnpm workspace.
+    assert_dish_contains(
+        &workspace,
+        "apps/web/dish.toml",
+        &[
+            r#"language = "node-pnpm""#,
+            r#"run = "pnpm run build""#,
+            "[tasks.typecheck]",
+            "cache = false",
+            "ci = true",
+            "[serve]",
+        ],
+    );
+    let web = std::fs::read_to_string(workspace.join("apps/web/dish.toml")).unwrap();
+    assert!(!web.contains("[tasks.dev]"), "{web}");
+}
+
+#[test]
+fn nx_workspace_migrates_and_plans() {
+    let (_tmp, workspace) = migrate_and_plan("migrate-nx", "nx");
+    // Nx projects carry only project.json, so the package manager has
+    // to come from the workspace root's `packageManager` field.
+    assert_dish_contains(
+        &workspace,
+        "apps/web/dish.toml",
+        &[
+            r#"language = "node-yarn""#,
+            r#"run = "vite build""#,
+            "[tasks.e2e]",
+            "cache = false",
+            "ci = true",
+            "[serve]",
+        ],
+    );
+    assert_dish_contains(
+        &workspace,
+        "libs/util/dish.toml",
+        &[
+            r#"name = "util""#,
+            r#"run = "tsc""#,
+            r#"outputs = ["dist"]"#,
+        ],
+    );
 }
 
 // ── Vendored real-world fixtures ───────────────────────────────────

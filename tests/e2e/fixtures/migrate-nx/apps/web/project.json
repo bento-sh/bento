@@ -1,0 +1,22 @@
+{
+  "name": "web",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "@nx/vite:build",
+      "options": { "outputPath": "{projectRoot}/dist" }
+    },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "options": { "jestConfig": "apps/web/jest.config.ts" }
+    },
+    "e2e": {
+      "executor": "@nx/playwright:playwright",
+      "cache": false
+    },
+    "serve": {
+      "executor": "@nx/vite:dev-server",
+      "options": { "buildTarget": "web:build" }
+    }
+  }
+}

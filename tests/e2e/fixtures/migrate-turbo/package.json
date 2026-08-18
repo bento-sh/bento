@@ -1,0 +1,6 @@
+{
+  "name": "migrate-turbo",
+  "private": true,
+  "packageManager": "pnpm@8.10.0",
+  "workspaces": ["apps/*", "packages/*"]
+}

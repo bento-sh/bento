@@ -1,0 +1,21 @@
+{
+  // turbo.json is JSONC — turbo's own schema allows comments.
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "test": {
+      "dependsOn": ["build"]
+    },
+    /* Non-lifecycle name: must opt into `bento ci` explicitly. */
+    "typecheck": {
+      "cache": false
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}
