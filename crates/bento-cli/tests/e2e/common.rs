@@ -55,11 +55,13 @@ pub fn fixtures_dir() -> PathBuf {
 
 /// Cache dir for vendored-on-demand clones. Gitignored via `target/`;
 /// first test run fills it, subsequent runs reuse.
+/// Vendored upstream repos for the network-gated e2e tests. Lives
+/// outside `target/` on purpose: Swatinem/rust-cache walks and prunes
+/// `target/` before saving, and it stripped the working files out of
+/// these clones while leaving `.git` behind — so the "already cloned"
+/// check passed on an empty tree.
 pub fn vendored_cache_dir() -> PathBuf {
-    workspace_root()
-        .join("target")
-        .join("e2e-cache")
-        .join("vendored")
+    workspace_root().join(".e2e-cache").join("vendored")
 }
 
 /// The `bento` binary cargo built for these tests. Fresh on every

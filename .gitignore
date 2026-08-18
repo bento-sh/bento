@@ -25,3 +25,4 @@ CLAUDE.local.md
 # Local design scratchpad — ADR-style planning docs stay local so
 # the repo ships with only user-facing docs + code comments.
 docs/design/
+.e2e-cache/
