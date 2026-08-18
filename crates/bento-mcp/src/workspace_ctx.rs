@@ -19,6 +19,9 @@ pub struct WorkspaceCtx {
     /// outside any bento tree). Tools should return a structured
     /// `workspace_not_found` error rather than panic.
     workspace_root: Option<PathBuf>,
+    /// Where resolution started — carried so the `workspace_not_found`
+    /// error can name the path the client actually gave us.
+    start: PathBuf,
 }
 
 impl WorkspaceCtx {
@@ -38,11 +41,25 @@ impl WorkspaceCtx {
         // `workspace` overrides once Phase 1 ships. Tools that need a
         // workspace must call `workspace_root()?` and handle `None`.
         let workspace_root = bento_core::find_workspace_root(&start).ok();
-        Ok(Self { workspace_root })
+        Ok(Self {
+            workspace_root,
+            start,
+        })
     }
 
     pub fn workspace_root(&self) -> Option<&Path> {
         self.workspace_root.as_deref()
+    }
+
+    /// Workspace root or a downcast-friendly [`bento_core::WorkspaceNotFound`]
+    /// so tools classify it as `kind = "workspace_not_found"`.
+    pub fn require_root(&self) -> Result<PathBuf> {
+        self.workspace_root.clone().ok_or_else(|| {
+            bento_core::WorkspaceNotFound {
+                start: self.start.clone(),
+            }
+            .into()
+        })
     }
 }
 
