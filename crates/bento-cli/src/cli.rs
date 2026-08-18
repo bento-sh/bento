@@ -85,13 +85,33 @@ pub enum Command {
 
     /// Convert turbo / nx / lerna / moon / rush / make config to bento
     ///
-    /// Convert a competing monorepo tool's config into bento config.
-    /// Reads the source tool's config (turbo.json, nx.json, etc.) plus
-    /// per-package manifests; emits a workspace bento.toml, per-package
-    /// dish.toml, and a starter bentos/prod.toml. Refuses to overwrite
-    /// existing files unless `--force` is set.
-    #[command(subcommand)]
-    Migrate(MigrateSource),
+    /// Reads the source tool's config (turbo.json, nx.json, lerna.json,
+    /// rush.json, .moon/workspace.yml, Makefile) plus the per-package
+    /// manifests it points at, then emits per-package dish.toml, a
+    /// workspace bento.toml, and a starter bentos/prod.toml. Anything
+    /// that can't be translated faithfully (per-task dependsOn, Nx
+    /// configurations, Rush phases, Make pattern rules) is reported as
+    /// a note to hand-port.
+    ///
+    /// `--force` regenerates existing dish.toml / bentos/prod.toml. An
+    /// existing bento.toml is never overwritten.
+    Migrate {
+        /// Source tool to read.
+        #[arg(value_name = "TOOL")]
+        tool: crate::migrate::MigrateTool,
+
+        /// Workspace root containing the source tool's config. Defaults to cwd.
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+
+        /// Show what would be written without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Regenerate an existing dish.toml / bentos/prod.toml.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Manage dishes (apps/services inside a bento)
     #[command(subcommand)]
@@ -479,136 +499,6 @@ pub enum Command {
         /// Optional team key to scope state lookups.
         #[arg(long)]
         team: Option<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum MigrateSource {
-    /// Migrate a Turborepo workspace. Reads root turbo.json (v2 `tasks`
-    /// or v1 `pipeline`), discovers packages via root package.json's
-    /// `workspaces` glob, emits per-package dish.toml + workspace
-    /// bento.toml + bentos/prod.toml. Per-package turbo.json overrides
-    /// are detected and noted but not currently applied — surface
-    /// in the migration report so users can hand-port them.
-    Turbo {
-        /// Workspace root containing turbo.json. Defaults to cwd.
-        #[arg(long, value_name = "DIR")]
-        path: Option<PathBuf>,
-
-        /// Show what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Overwrite existing bento.toml / dish.toml / bentos/prod.toml.
-        /// Without this, the migrator refuses to clobber any of those.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Migrate an Nx workspace. Reads root nx.json (targetDefaults,
-    /// namedInputs, workspaceLayout) plus per-project project.json
-    /// files; emits per-project dish.toml + workspace bento.toml +
-    /// bentos/prod.toml. Common Nx executors map to canonical CLI
-    /// invocations (`@nx/vite:build` → `vite build`, `@nx/jest:jest`
-    /// → `jest`, …); unknown executors emit `nx run …` shims with
-    /// an Inferred note. Configurations and per-target dependsOn are
-    /// surfaced as notes — bento derives task ordering from the dish
-    /// graph, not per-target deps.
-    Nx {
-        /// Workspace root containing nx.json. Defaults to cwd.
-        #[arg(long, value_name = "DIR")]
-        path: Option<PathBuf>,
-
-        /// Show what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Overwrite existing bento.toml / dish.toml / bentos/prod.toml.
-        /// Without this, the migrator refuses to clobber any of those.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Migrate a Lerna workspace. Reads `lerna.json` (packages glob,
-    /// useWorkspaces, npmClient) plus each package's `package.json`
-    /// scripts. Emits per-package dish.toml mirroring scripts as
-    /// `[tasks.<name>]` blocks plus workspace bento.toml + bentos/prod.toml.
-    /// Lerna's task graph is shallow (no cross-package dependsOn) so
-    /// dish-level ordering is left to the user with a TODO note.
-    Lerna {
-        /// Workspace root containing lerna.json. Defaults to cwd.
-        #[arg(long, value_name = "DIR")]
-        path: Option<PathBuf>,
-
-        /// Show what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Overwrite existing bento.toml / dish.toml / bentos/prod.toml.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Best-effort `Makefile` migrator. Parses top-level targets,
-    /// prerequisites (treated as `dependsOn`), and recipe lines (treated
-    /// as shell commands). Cannot translate variable expansion, pattern
-    /// rules, or automatic variables — those surface as notes the user
-    /// must hand-port. `.PHONY` targets handled best-effort. Single-dish
-    /// shape (the Makefile root becomes one bento with one dish).
-    Make {
-        /// Directory containing the Makefile. Defaults to cwd.
-        #[arg(long, value_name = "DIR")]
-        path: Option<PathBuf>,
-
-        /// Show what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Overwrite existing bento.toml / dish.toml / bentos/prod.toml.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Migrate a moonrepo workspace. Reads `.moon/workspace.yml`
-    /// (project glob patterns, vcs, runner) plus each project's
-    /// `moon.yml`. Maps moon's task definitions (`command`, `deps`,
-    /// `inputs`, `outputs`, `options.cache`, `platform`) onto bento
-    /// dish tasks. Moon's first-class language toolchain blocks
-    /// (`rust`, `node`, `deno`) surface as notes — bento doesn't
-    /// have a direct equivalent yet.
-    Moon {
-        /// Workspace root containing `.moon/workspace.yml`. Defaults
-        /// to cwd.
-        #[arg(long, value_name = "DIR")]
-        path: Option<PathBuf>,
-
-        /// Show what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Overwrite existing bento.toml / dish.toml / bentos/prod.toml.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Migrate a Rush.js workspace. Reads `rush.json` (projects array
-    /// with packageName + projectFolder) plus each project's
-    /// `package.json` scripts and Rush-specific
-    /// `config/rush/command-line.json` (custom bulk commands). Emits
-    /// per-package dish.toml mirroring scripts; bulk commands surface
-    /// as notes for the user to wire up manually.
-    Rush {
-        /// Workspace root containing rush.json. Defaults to cwd.
-        #[arg(long, value_name = "DIR")]
-        path: Option<PathBuf>,
-
-        /// Show what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Overwrite existing bento.toml / dish.toml / bentos/prod.toml.
-        #[arg(long)]
-        force: bool,
     },
 }
 

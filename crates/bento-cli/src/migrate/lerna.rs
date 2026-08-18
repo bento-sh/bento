@@ -16,6 +16,10 @@
 //! | `npmClient: "pnpm" \| "yarn" \| "bun"` | `language = "node-pnpm" \| "node-yarn" \| "bun"` and `run = "<client> run <task>"` |
 //! | `useWorkspaces: true`                  | reads globs from root `package.json`'s `workspaces` |
 //!
+//! Without an explicit `npmClient` the package manager is detected the
+//! same way the node adapters detect it (corepack `packageManager`,
+//! then the nearest lockfile).
+//!
 //! ## What gets a note instead
 //!
 //! - **Cross-package dependencies.** Lerna doesn't model task-level
@@ -29,16 +33,14 @@
 //! - **`useNx: true`.** Hybrid lerna+nx repos should run the nx
 //!   migrator instead — surfaced as `Skipped` with a pointer.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::init::{toml_basic_string, toml_table_key};
-
-use super::{MigrationReport, NoteKind};
+use super::{
+    discover_workspace_packages, node_pm, node_pm_by_name, parse_jsonc_file, render_task,
+    short_name, DiscoveredPackage, Emitter, MigrationReport, NodePm, NoteKind, PackageJson,
+    TaskBlock,
+};
 
 // ── Lerna config (subset we care about) ────────────────────────────
 
@@ -52,8 +54,9 @@ struct LernaJson {
     /// When true, defer to root `package.json`'s `workspaces` field.
     #[serde(rename = "useWorkspaces")]
     use_workspaces: Option<bool>,
-    /// `"npm"` (default), `"pnpm"`, `"yarn"`, or `"bun"`. Drives the
-    /// adapter id + the `run` command in emitted dish.toml task blocks.
+    /// `"npm"`, `"pnpm"`, `"yarn"`, or `"bun"`. Drives the adapter id +
+    /// the `run` command in emitted dish.toml task blocks. Absent →
+    /// detected from the workspace.
     #[serde(rename = "npmClient")]
     npm_client: Option<String>,
     /// Lerna's own version (or `"independent"`). Informational only.
@@ -66,99 +69,51 @@ struct LernaJson {
     command: Option<serde_json::Value>,
 }
 
-// ── Package.json (subset) ──────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct PackageJson {
-    #[serde(default)]
-    name: Option<String>,
-    /// Either an array of globs (`["packages/*"]`) or an object with
-    /// `{packages: [...]}` (yarn classic). Both shapes flatten via
-    /// `WorkspacesField`.
-    #[serde(default)]
-    workspaces: Option<WorkspacesField>,
-    #[serde(default)]
-    scripts: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum WorkspacesField {
-    Array(Vec<String>),
-    Object {
-        #[serde(default)]
-        packages: Vec<String>,
-    },
-}
-
 // ── Public entry point ─────────────────────────────────────────────
 
-pub struct Options {
-    pub root: PathBuf,
-    pub dry_run: bool,
-    pub force: bool,
-}
-
-pub fn run(opts: Options) -> Result<MigrationReport> {
-    let mut report = MigrationReport {
-        applied: !opts.dry_run,
-        ..Default::default()
-    };
+pub fn run(mut e: Emitter) -> Result<MigrationReport> {
+    let root = e.root().to_path_buf();
 
     // 1. Load lerna.json.
-    let lerna_path = opts.root.join("lerna.json");
-    let lerna: LernaJson = parse_json_file(&lerna_path)
+    let lerna_path = root.join("lerna.json");
+    let lerna: LernaJson = parse_jsonc_file(&lerna_path)
         .with_context(|| format!("reading {}", lerna_path.display()))?;
 
-    // 2. Pick the npm client → adapter + run-prefix.
-    let npm_client = lerna.npm_client.as_deref().unwrap_or("npm");
-    let (language_id, run_prefix) = match npm_client {
-        "pnpm" => ("node-pnpm", "pnpm run"),
-        "yarn" => ("node-yarn", "yarn run"),
-        "bun" => ("bun", "bun run"),
-        // Any unknown / unset / "npm" falls through to npm.
-        _ => ("node-npm", "npm run"),
-    };
-
-    // 3. Surface command.* config + useNx as notes (informational; not ported).
-    if let Some(cmd) = &lerna.command {
-        if let Some(obj) = cmd.as_object() {
-            if !obj.is_empty() {
-                let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-                report.push_note(
-                    NoteKind::Skipped,
-                    format!(
-                        "lerna.json `command.*` config not ported: {} — these (publish, \
-                         bootstrap, version, etc.) are lerna-specific commands with no \
-                         direct bento equivalent. If you used `lerna publish`, model release \
-                         flow via `bento release`; for `lerna bootstrap`, the matching npm \
-                         client install (e.g. `bento install`) handles workspaces natively.",
-                        keys.join(", ")
-                    ),
-                );
-            }
+    // 2. Surface command.* config + useNx as notes (informational; not ported).
+    if let Some(obj) = lerna.command.as_ref().and_then(|c| c.as_object()) {
+        if !obj.is_empty() {
+            let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+            e.note(
+                NoteKind::Skipped,
+                format!(
+                    "lerna.json `command.*` config not ported: {} — these (publish, \
+                     bootstrap, version, etc.) are lerna-specific commands with no \
+                     direct bento equivalent. If you used `lerna publish`, model release \
+                     flow via `bento release`; for `lerna bootstrap`, the matching npm \
+                     client install (e.g. `bento install`) handles workspaces natively.",
+                    keys.join(", ")
+                ),
+            );
         }
     }
     if lerna.use_nx == Some(true) {
-        report.push_note(
+        e.note(
             NoteKind::Skipped,
             "lerna.json has `useNx: true` — this is a hybrid lerna+nx repo. \
              Re-run `bento migrate nx` to capture the nx task graph; the lerna \
              migrator only ports scripts from package.json.",
         );
     }
-    if let Some(version) = &lerna.version {
-        if version == "independent" {
-            report.push_note(
-                NoteKind::Inferred,
-                "lerna.json `version: \"independent\"` — bento doesn't manage package \
-                 versions; release tooling (`bento release` or `changesets`) lives outside \
-                 the migrator's scope.",
-            );
-        }
+    if lerna.version.as_deref() == Some("independent") {
+        e.note(
+            NoteKind::Inferred,
+            "lerna.json `version: \"independent\"` — bento doesn't manage package \
+             versions; release tooling (`bento release` or `changesets`) lives outside \
+             the migrator's scope.",
+        );
     }
 
-    // 4. Resolve workspace globs. Order of precedence:
+    // 3. Resolve workspace globs. Order of precedence:
     //    a) `useWorkspaces: true` → read root `package.json` `workspaces`
     //    b) `packages: [...]` in lerna.json
     //    c) Implicit fallback: lerna 7+ removed `useWorkspaces` (the
@@ -168,20 +123,12 @@ pub fn run(opts: Options) -> Result<MigrationReport> {
     //       lerna 7+ canonical shape.
     let use_workspaces = lerna.use_workspaces.unwrap_or(false);
     let lerna7_implicit = lerna.use_workspaces.is_none() && lerna.packages.is_none();
-    let root_pkg_path = opts.root.join("package.json");
-    let mut root_pkg_loaded: Option<PackageJson> = None;
 
     let workspace_globs: Vec<String> = if use_workspaces || lerna7_implicit {
-        let root_pkg: PackageJson = parse_json_file(&root_pkg_path)
+        let root_pkg_path = root.join("package.json");
+        let root_pkg: PackageJson = parse_jsonc_file(&root_pkg_path)
             .with_context(|| format!("reading {}", root_pkg_path.display()))?;
-        let globs = root_pkg
-            .workspaces
-            .as_ref()
-            .map(|w| match w {
-                WorkspacesField::Array(v) => v.clone(),
-                WorkspacesField::Object { packages } => packages.clone(),
-            })
-            .unwrap_or_default();
+        let globs = root_pkg.workspace_globs();
         if globs.is_empty() {
             let detail = if lerna7_implicit {
                 "lerna.json has no `packages` field (lerna 7+ delegates to package.json \
@@ -191,167 +138,68 @@ pub fn run(opts: Options) -> Result<MigrationReport> {
                 "lerna.json sets useWorkspaces: true but root package.json has no \
                  `workspaces` field — nothing to migrate."
             };
-            report.push_note(NoteKind::Skipped, detail);
-            return Ok(report);
+            e.note(NoteKind::Skipped, detail);
+            return e.finish();
         }
         if lerna7_implicit {
-            report.push_note(
+            e.note(
                 NoteKind::Inferred,
                 "lerna.json has no explicit `packages` or `useWorkspaces` field — \
                  inferred lerna 7+ shape (defers to root package.json `workspaces`).",
             );
         }
-        root_pkg_loaded = Some(root_pkg);
         globs
     } else {
         lerna.packages.clone().unwrap_or_default()
     };
 
     if workspace_globs.is_empty() {
-        report.push_note(
+        e.note(
             NoteKind::Skipped,
             "lerna.json declares no `packages` globs — nothing to migrate.",
         );
-        return Ok(report);
+        return e.finish();
     }
 
-    // 5. Discover packages.
-    let packages = discover_workspace_packages(&opts.root, &workspace_globs)?;
+    // 4. Discover packages.
+    let packages = discover_workspace_packages(&root, &workspace_globs)?;
     if packages.is_empty() {
-        // Maybe the root itself has scripts and the user expected single-package mode.
-        if root_pkg_loaded.is_none() && root_pkg_path.exists() {
-            let root_pkg: PackageJson = parse_json_file(&root_pkg_path)
-                .with_context(|| format!("reading {}", root_pkg_path.display()))?;
-            root_pkg_loaded = Some(root_pkg);
-        }
-        report.push_note(
+        e.note(
             NoteKind::Skipped,
             format!("no packages matched lerna globs: {workspace_globs:?} — nothing to write"),
         );
-        let _ = root_pkg_loaded;
-        return Ok(report);
+        return e.finish();
     }
 
-    // 6. Inferred note: lerna doesn't model task-level cross-package edges.
-    report.push_note(
+    // 5. Inferred note: lerna doesn't model task-level cross-package edges.
+    e.note(
         NoteKind::Inferred,
         "lerna doesn't model task dependencies between packages — bento derives \
          ordering from the dish graph. If your build needs upstream dishes built first, \
          wire `depends_on = [\"<dish>\"]` at the dish.toml top level by hand.",
     );
 
-    // 7. Emit per-package dish.toml.
-    let mut dish_rels: Vec<String> = Vec::new();
+    // 6. Emit per-package dish.toml.
     for pkg in &packages {
-        let dish_toml_path = pkg.dir.join("dish.toml");
-        if dish_toml_path.exists() && !opts.force {
-            report.push_note(
-                NoteKind::Conflict,
-                format!(
-                    "{} already exists — skipped (re-run with --force to overwrite)",
-                    relative(&dish_toml_path, &opts.root).display()
-                ),
-            );
-            continue;
-        }
-        let body = render_dish_toml(pkg, language_id, run_prefix);
-        write_or_simulate(&dish_toml_path, &body, opts.dry_run, &mut report)?;
-        dish_rels.push(relative(&pkg.dir, &opts.root).display().to_string());
+        let pm = match lerna.npm_client.as_deref() {
+            Some(client) => node_pm_by_name(client),
+            None => node_pm(&pkg.dir, &root),
+        };
+        let body = render_dish_toml(pkg, pm);
+        e.dish(&pkg.dir, &body)?;
     }
 
-    // 8. Workspace bento.toml — same starter shape as turbo migrator.
-    let bento_toml_path = opts.root.join("bento.toml");
-    if bento_toml_path.exists() && !opts.force {
-        report.push_note(
-            NoteKind::Conflict,
-            "bento.toml already exists — skipped (re-run with --force to overwrite)",
-        );
-    } else {
-        let bento_body = crate::init::render_bento_toml(&BTreeMap::new());
-        write_or_simulate(&bento_toml_path, &bento_body, opts.dry_run, &mut report)?;
-    }
-
-    // 9. bentos/prod.toml — list every dish.
-    let prod_path = opts.root.join("bentos").join("prod.toml");
-    if prod_path.exists() && !opts.force {
-        report.push_note(
-            NoteKind::Conflict,
-            "bentos/prod.toml already exists — skipped (re-run with --force to overwrite)",
-        );
-    } else {
-        if !opts.dry_run {
-            fs::create_dir_all(prod_path.parent().unwrap()).context("creating bentos/")?;
-        }
-        let prod_body = crate::init::render_prod_toml(&dish_rels);
-        write_or_simulate(&prod_path, &prod_body, opts.dry_run, &mut report)?;
-    }
-
-    Ok(report)
-}
-
-// ── Workspace discovery ────────────────────────────────────────────
-
-struct DiscoveredPackage {
-    dir: PathBuf,
-    rel_dir: PathBuf,
-    pkg: PackageJson,
-}
-
-/// Resolve npm-style workspace globs to a list of package directories.
-/// Mirrors the turbo migrator's resolver: `<segment>/*` and
-/// `<segment>/**` plus literal paths.
-fn discover_workspace_packages(root: &Path, globs: &[String]) -> Result<Vec<DiscoveredPackage>> {
-    let mut out = Vec::new();
-    for g in globs {
-        for dir in resolve_glob(root, g)? {
-            let pkg_json = dir.join("package.json");
-            if !pkg_json.exists() {
-                continue;
-            }
-            let pkg: PackageJson = parse_json_file(&pkg_json)
-                .with_context(|| format!("reading {}", pkg_json.display()))?;
-            let rel_dir = dir.strip_prefix(root).unwrap_or(&dir).to_path_buf();
-            out.push(DiscoveredPackage { dir, rel_dir, pkg });
-        }
-    }
-    out.sort_by(|a, b| a.rel_dir.cmp(&b.rel_dir));
-    Ok(out)
-}
-
-fn resolve_glob(root: &Path, glob: &str) -> Result<Vec<PathBuf>> {
-    if let Some(prefix) = glob.strip_suffix("/*") {
-        let dir = root.join(prefix);
-        if !dir.is_dir() {
-            return Ok(Vec::new());
-        }
-        let mut out: Vec<PathBuf> = fs::read_dir(&dir)
-            .with_context(|| format!("reading {}", dir.display()))?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .collect();
-        out.sort();
-        Ok(out)
-    } else if let Some(prefix) = glob.strip_suffix("/**") {
-        resolve_glob(root, &format!("{prefix}/*"))
-    } else {
-        let p = root.join(glob);
-        if p.is_dir() {
-            Ok(vec![p])
-        } else {
-            Ok(Vec::new())
-        }
-    }
+    e.finish()
 }
 
 // ── dish.toml renderer ─────────────────────────────────────────────
 
-fn render_dish_toml(pkg: &DiscoveredPackage, language_id: &str, run_prefix: &str) -> String {
+fn render_dish_toml(pkg: &DiscoveredPackage, pm: NodePm) -> String {
     let dish_name = pkg
         .pkg
         .name
         .as_deref()
-        .map(infer_short_name)
+        .map(short_name)
         .or_else(|| {
             pkg.dir
                 .file_name()
@@ -362,66 +210,28 @@ fn render_dish_toml(pkg: &DiscoveredPackage, language_id: &str, run_prefix: &str
 
     let mut body = format!(
         "name = \"{dish_name}\"\n\
-         language = \"{language_id}\"\n\
+         language = \"{lang}\"\n\
          \n\
          # Migrated from lerna. Each [tasks.<name>] mirrors the package.json\n\
          # script with the same name. Lerna doesn't model task-level deps —\n\
          # add `depends_on = [\"<dish>\"]` at the dish top level by hand if\n\
          # this dish needs another built first.\n",
+        lang = pm.language,
     );
 
-    // Sort scripts deterministically — BTreeMap already does this, but
-    // be explicit so future map swaps don't surprise us.
-    let mut script_names: Vec<&String> = pkg.pkg.scripts.keys().collect();
-    script_names.sort();
-    for name in script_names {
-        body.push('\n');
-        body.push_str(&format!("[tasks.{}]\n", toml_table_key(name)));
-        body.push_str(&format!(
-            "run = {}\n",
-            toml_basic_string(&format!("{run_prefix} {name}"))
+    // package.json scripts are raw shell entry points, not a declared
+    // CI pipeline — a mirrored `dev` / `start` must stay `bento run`-only.
+    for name in pkg.pkg.scripts.keys() {
+        body.push_str(&render_task(
+            name,
+            &TaskBlock {
+                run: &format!("{} {name}", pm.run_prefix),
+                ..Default::default()
+            },
         ));
     }
 
     body
-}
-
-/// Strip a leading `@scope/` from a package.json name.
-/// `@acme/web` → `web`.
-fn infer_short_name(pkg_name: &str) -> String {
-    pkg_name
-        .rsplit_once('/')
-        .map(|(_, last)| last.to_string())
-        .unwrap_or_else(|| pkg_name.to_string())
-}
-
-// ── Helpers ────────────────────────────────────────────────────────
-
-fn parse_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let body = fs::read_to_string(path).with_context(|| format!("opening {}", path.display()))?;
-    let parsed = serde_json::from_str(&body)
-        .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    Ok(parsed)
-}
-
-fn write_or_simulate(
-    path: &Path,
-    body: &str,
-    dry_run: bool,
-    report: &mut MigrationReport,
-) -> Result<()> {
-    if !dry_run {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-        fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
-    }
-    report.push_file(path.to_path_buf(), body.len());
-    Ok(())
-}
-
-fn relative<'a>(p: &'a Path, root: &'a Path) -> &'a Path {
-    p.strip_prefix(root).unwrap_or(p)
 }
 
 // ── tests ──────────────────────────────────────────────────────────
@@ -429,6 +239,17 @@ fn relative<'a>(p: &'a Path, root: &'a Path) -> &'a Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migrate::Options;
+    use std::path::{Path, PathBuf};
+
+    fn migrate(root: &Path, dry_run: bool, force: bool) -> MigrationReport {
+        run(Emitter::new(Options {
+            root: root.to_path_buf(),
+            dry_run,
+            force,
+        }))
+        .unwrap()
+    }
 
     /// Two-package fixture using the default `npmClient: "npm"`.
     fn fixture() -> tempfile::TempDir {
@@ -477,12 +298,7 @@ mod tests {
     #[test]
     fn migrates_workspace_with_two_packages() {
         let tmp = fixture();
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), false, false);
 
         let written: Vec<_> = report
             .files_written
@@ -520,17 +336,12 @@ mod tests {
     }
 
     #[test]
-    fn refuses_to_overwrite_without_force() {
+    fn refuses_to_overwrite_without_force_but_keeps_the_dish() {
         let tmp = fixture();
         let preexisting = "name = \"hand-written\"\n";
         std::fs::write(tmp.path().join("packages/a/dish.toml"), preexisting).unwrap();
 
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), false, false);
 
         assert!(report.has_conflicts());
         let conflict_msgs: Vec<&str> = report
@@ -557,17 +368,16 @@ mod tests {
             .map(|f| f.path.strip_prefix(tmp.path()).unwrap().to_path_buf())
             .collect();
         assert!(written.contains(&PathBuf::from("packages/b/dish.toml")));
+
+        // A skipped dish.toml is still a dish in the bento.
+        let prod = std::fs::read_to_string(tmp.path().join("bentos/prod.toml")).unwrap();
+        assert!(prod.contains("packages/a"), "{prod}");
     }
 
     #[test]
     fn dry_run_writes_nothing() {
         let tmp = fixture();
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: true,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), true, false);
 
         assert!(!report.applied);
         assert!(!report.files_written.is_empty());
@@ -597,13 +407,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
-        let _ = report;
+        migrate(tmp.path(), false, false);
 
         let dish = std::fs::read_to_string(tmp.path().join("packages/x/dish.toml")).unwrap();
         assert!(
@@ -614,6 +418,33 @@ mod tests {
             dish.contains(r#"run = "pnpm run build""#),
             "expected pnpm run prefix, dish:\n{dish}"
         );
+    }
+
+    #[test]
+    fn detects_the_package_manager_when_npm_client_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("lerna.json"),
+            r#"{ "packages": ["packages/*"] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{ "name": "root", "packageManager": "bun@1.2.0" }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("packages/x")).unwrap();
+        std::fs::write(
+            tmp.path().join("packages/x/package.json"),
+            r#"{ "name": "x", "scripts": { "build": "tsc" } }"#,
+        )
+        .unwrap();
+
+        migrate(tmp.path(), false, false);
+
+        let dish = std::fs::read_to_string(tmp.path().join("packages/x/dish.toml")).unwrap();
+        assert!(dish.contains(r#"language = "bun""#), "{dish}");
+        assert!(dish.contains(r#"run = "bun run build""#), "{dish}");
     }
 
     #[test]
@@ -647,12 +478,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), false, false);
 
         let written: Vec<_> = report
             .files_written
@@ -690,12 +516,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: true,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), true, false);
 
         let skipped: Vec<&str> = report
             .notes
@@ -709,13 +530,6 @@ mod tests {
                 .any(|m| m.contains("command.*") && m.contains("publish")),
             "expected Skipped note mentioning command.* + publish, got: {skipped:?}"
         );
-    }
-
-    #[test]
-    fn infer_short_name_strips_scope() {
-        assert_eq!(infer_short_name("@acme/web"), "web");
-        assert_eq!(infer_short_name("plain"), "plain");
-        assert_eq!(infer_short_name("@a/b/c"), "c");
     }
 
     #[test]
@@ -741,13 +555,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
-        let _ = report;
+        migrate(tmp.path(), false, false);
 
         let dish = std::fs::read_to_string(tmp.path().join("pkg/a/dish.toml")).unwrap();
         assert!(dish.contains(r#"language = "node-yarn""#));

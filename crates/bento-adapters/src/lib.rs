@@ -60,6 +60,7 @@ pub use integration::{
 };
 pub use linear::LinearIntegration;
 pub use maven::MavenAdapter;
+pub use node_common::detect_node_pm;
 pub use node_npm::NodeNpmAdapter;
 pub use php::PhpAdapter;
 pub use plugin_adapter::SubprocessAdapter;

@@ -31,9 +31,7 @@ use bento_core::{
     IntegrationTaskKind, LocalCache, PlanOptions, TargetRef, Workspace,
 };
 
-use cli::{
-    BoxAction, CacheAction, Cli, Command, DishAction, GlobalFlags, McpAction, MigrateSource,
-};
+use cli::{BoxAction, CacheAction, Cli, Command, DishAction, GlobalFlags, McpAction};
 
 fn main() {
     let cli = Cli::parse();
@@ -69,7 +67,12 @@ fn init_tracing(verbose: bool) {
 fn run(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Command::Init { no_detect } => return run_init(&cli.global, no_detect),
-        Command::Migrate(source) => return run_migrate(&cli.global, source),
+        Command::Migrate {
+            tool,
+            path,
+            dry_run,
+            force,
+        } => return run_migrate(&cli.global, tool, path, dry_run, force),
         Command::Artifacts => return artifacts::run(&cli.global),
         Command::Dish(DishAction::Add { path, lang }) => {
             return run_dish_add(&cli.global, path, lang);
@@ -1688,137 +1691,33 @@ fn format_age(unix_seconds: u64) -> String {
     }
 }
 
-fn run_migrate(global: &GlobalFlags, source: MigrateSource) -> anyhow::Result<i32> {
-    match source {
-        MigrateSource::Turbo {
-            path,
+fn run_migrate(
+    global: &GlobalFlags,
+    tool: migrate::MigrateTool,
+    path: Option<PathBuf>,
+    dry_run: bool,
+    force: bool,
+) -> anyhow::Result<i32> {
+    let root = match path {
+        Some(p) => p,
+        None => std::env::current_dir()?,
+    };
+    let report = migrate::run(
+        tool,
+        migrate::Options {
+            root,
             dry_run,
             force,
-        } => {
-            let root = match path {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            let report = migrate::turbo::run(migrate::turbo::Options {
-                root,
-                dry_run,
-                force,
-            })?;
-            if global.json {
-                crate::json::emit(&report)?;
-            } else {
-                migrate::print_human(&report);
-            }
-            // Conflicts → exit 1 so CI fails clearly when a re-run is
-            // needed. Other notes (Skipped, Inferred) don't fail.
-            Ok(if report.has_conflicts() { 1 } else { 0 })
-        }
-        MigrateSource::Nx {
-            path,
-            dry_run,
-            force,
-        } => {
-            let root = match path {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            let report = migrate::nx::run(migrate::nx::Options {
-                root,
-                dry_run,
-                force,
-            })?;
-            if global.json {
-                crate::json::emit(&report)?;
-            } else {
-                migrate::print_human(&report);
-            }
-            Ok(if report.has_conflicts() { 1 } else { 0 })
-        }
-        MigrateSource::Lerna {
-            path,
-            dry_run,
-            force,
-        } => {
-            let root = match path {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            let report = migrate::lerna::run(migrate::lerna::Options {
-                root,
-                dry_run,
-                force,
-            })?;
-            if global.json {
-                crate::json::emit(&report)?;
-            } else {
-                migrate::print_human(&report);
-            }
-            Ok(if report.has_conflicts() { 1 } else { 0 })
-        }
-        MigrateSource::Make {
-            path,
-            dry_run,
-            force,
-        } => {
-            let root = match path {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            let report = migrate::make::run(migrate::make::Options {
-                root,
-                dry_run,
-                force,
-            })?;
-            if global.json {
-                crate::json::emit(&report)?;
-            } else {
-                migrate::print_human(&report);
-            }
-            Ok(if report.has_conflicts() { 1 } else { 0 })
-        }
-        MigrateSource::Moon {
-            path,
-            dry_run,
-            force,
-        } => {
-            let root = match path {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            let report = migrate::moon::run(migrate::moon::Options {
-                root,
-                dry_run,
-                force,
-            })?;
-            if global.json {
-                crate::json::emit(&report)?;
-            } else {
-                migrate::print_human(&report);
-            }
-            Ok(if report.has_conflicts() { 1 } else { 0 })
-        }
-        MigrateSource::Rush {
-            path,
-            dry_run,
-            force,
-        } => {
-            let root = match path {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            let report = migrate::rush::run(migrate::rush::Options {
-                root,
-                dry_run,
-                force,
-            })?;
-            if global.json {
-                crate::json::emit(&report)?;
-            } else {
-                migrate::print_human(&report);
-            }
-            Ok(if report.has_conflicts() { 1 } else { 0 })
-        }
+        },
+    )?;
+    if global.json {
+        crate::json::emit(&report)?;
+    } else {
+        migrate::print_human(&report);
     }
+    // Conflicts → exit 1 so CI fails clearly when a re-run is needed.
+    // Other notes (Skipped, Inferred) don't fail.
+    Ok(if report.has_conflicts() { 1 } else { 0 })
 }
 
 fn run_init(global: &GlobalFlags, no_detect: bool) -> anyhow::Result<i32> {

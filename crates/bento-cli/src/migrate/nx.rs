@@ -16,14 +16,13 @@
 //! | `targets.<name>.inputs` (literals)   | `dish.toml [tasks.<name>] inputs = ...`                           |
 //! | `executor: nx:run-commands`          | `run = options.command` (or `commands[]` joined with `&&`)        |
 //! | Common `@nx/...` build/test executors| canonical CLI invocation (`vite build`, `jest`, `tsc`, …)         |
+//! | `cache: false`                       | `dish.toml [tasks.<name>] cache = false`                          |
 //!
 //! ## What gets a note instead
 //!
 //! - `dependsOn` arrays — bento derives task ordering from the dish
 //!   graph. `^build` ≈ bento's automatic upstream rebuild via
 //!   `dish.depends_on`, which the user wires by hand.
-//! - `cache: false` — bento has no per-task no-cache flag; surfaced
-//!   as a note. Use the global `bento --no-cache` for ad-hoc bypass.
 //! - Persistent dev executors (`@nx/vite:dev-server`, `@nx/webpack:
 //!   dev-server`, `@nx/next:server`) — modelled as the dish-level
 //!   `[serve]` block in dish.toml, not `[tasks.<name>]`.
@@ -42,9 +41,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::init::{toml_basic_string, toml_table_key};
-
-use super::{MigrationReport, NoteKind};
+use super::{
+    node_pm, parse_jsonc_file, render_task, short_name, Emitter, MigrationReport, NoteKind,
+    TaskBlock,
+};
 
 // ── nx.json (subset) ───────────────────────────────────────────────
 
@@ -130,26 +130,17 @@ struct ProjectJson {
 
 // ── Public entry point ─────────────────────────────────────────────
 
-pub struct Options {
-    pub root: PathBuf,
-    pub dry_run: bool,
-    pub force: bool,
-}
-
-pub fn run(opts: Options) -> Result<MigrationReport> {
-    let mut report = MigrationReport {
-        applied: !opts.dry_run,
-        ..Default::default()
-    };
+pub fn run(mut e: Emitter) -> Result<MigrationReport> {
+    let root = e.root().to_path_buf();
 
     // 1. Load nx.json — present in nearly every Nx workspace, but
     //    inferred-only workspaces can omit it. Treat absence as an
     //    empty config rather than a hard error.
-    let nx_path = opts.root.join("nx.json");
+    let nx_path = root.join("nx.json");
     let nx: NxJson = if nx_path.is_file() {
-        parse_json_file(&nx_path).with_context(|| format!("reading {}", nx_path.display()))?
+        parse_jsonc_file(&nx_path).with_context(|| format!("reading {}", nx_path.display()))?
     } else {
-        report.push_note(
+        e.note(
             NoteKind::Inferred,
             "no nx.json at workspace root — proceeding with empty defaults",
         );
@@ -158,10 +149,10 @@ pub fn run(opts: Options) -> Result<MigrationReport> {
 
     // 2. Discover projects by walking for project.json. Cap the walk
     //    to the declared apps/libs dirs when workspaceLayout is set.
-    let scan_dirs = scan_dirs(&opts.root, nx.workspace_layout.as_ref());
-    let projects = discover_projects(&opts.root, &scan_dirs)?;
+    let scan_dirs = scan_dirs(&root, nx.workspace_layout.as_ref());
+    let projects = discover_projects(&root, &scan_dirs)?;
     if projects.is_empty() {
-        report.push_note(
+        e.note(
             NoteKind::Skipped,
             format!(
                 "no project.json files found under {:?} — nothing to write",
@@ -171,57 +162,16 @@ pub fn run(opts: Options) -> Result<MigrationReport> {
                     .collect::<Vec<_>>()
             ),
         );
-        return Ok(report);
+        return e.finish();
     }
 
     // 3. Per-project dish.toml.
-    let mut dish_rels: Vec<String> = Vec::new();
     for proj in &projects {
-        let dish_path = proj.dir.join("dish.toml");
-        if dish_path.exists() && !opts.force {
-            report.push_note(
-                NoteKind::Conflict,
-                format!(
-                    "{} already exists — skipped (re-run with --force to overwrite)",
-                    relative(&dish_path, &opts.root).display()
-                ),
-            );
-            continue;
-        }
-        let body = render_dish_toml(proj, &nx, &mut report);
-        write_or_simulate(&dish_path, &body, opts.dry_run, &mut report)?;
-        dish_rels.push(relative(&proj.dir, &opts.root).display().to_string());
+        let body = render_dish_toml(proj, &root, &nx, &mut e);
+        e.dish(&proj.dir, &body)?;
     }
 
-    // 4. Workspace bento.toml — placeholder shape; user fills in
-    //    cache + toolchain pins later.
-    let bento_path = opts.root.join("bento.toml");
-    if bento_path.exists() && !opts.force {
-        report.push_note(
-            NoteKind::Conflict,
-            "bento.toml already exists — skipped (re-run with --force to overwrite)",
-        );
-    } else {
-        let body = crate::init::render_bento_toml(&BTreeMap::new());
-        write_or_simulate(&bento_path, &body, opts.dry_run, &mut report)?;
-    }
-
-    // 5. bentos/prod.toml — list every dish the migrator created.
-    let prod_path = opts.root.join("bentos").join("prod.toml");
-    if prod_path.exists() && !opts.force {
-        report.push_note(
-            NoteKind::Conflict,
-            "bentos/prod.toml already exists — skipped (re-run with --force to overwrite)",
-        );
-    } else {
-        if !opts.dry_run {
-            fs::create_dir_all(prod_path.parent().unwrap()).context("creating bentos/")?;
-        }
-        let body = crate::init::render_prod_toml(&dish_rels);
-        write_or_simulate(&prod_path, &body, opts.dry_run, &mut report)?;
-    }
-
-    Ok(report)
+    e.finish()
 }
 
 // ── Project discovery ──────────────────────────────────────────────
@@ -268,7 +218,7 @@ fn discover_projects(root: &Path, scan_dirs: &[PathBuf]) -> Result<Vec<Discovere
             if !seen.insert(proj_dir.clone()) {
                 return Ok(());
             }
-            let project: ProjectJson = parse_json_file(project_json)
+            let project: ProjectJson = parse_jsonc_file(project_json)
                 .with_context(|| format!("reading {}", project_json.display()))?;
             let rel_dir = proj_dir
                 .strip_prefix(root)
@@ -320,12 +270,12 @@ fn walk_for_project_json(dir: &Path, cb: &mut dyn FnMut(&Path) -> Result<()>) ->
 
 // ── dish.toml renderer ─────────────────────────────────────────────
 
-fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut MigrationReport) -> String {
+fn render_dish_toml(proj: &DiscoveredProject, root: &Path, nx: &NxJson, e: &mut Emitter) -> String {
     let dish_name = proj
         .project
         .name
         .as_deref()
-        .map(infer_short_name)
+        .map(short_name)
         .or_else(|| {
             proj.dir
                 .file_name()
@@ -334,16 +284,19 @@ fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut Migratio
         })
         .unwrap_or_else(|| "dish".to_string());
 
-    // Heuristic: every Nx project ultimately runs through node, so
-    // `node-npm` is the safest starter language. User picks the right
-    // manager (npm/pnpm/bun/yarn) by editing the line.
+    // Every Nx project ultimately runs through node; which package
+    // manager is a per-workspace fact, detected the same way the node
+    // adapters detect it (an Nx project dir often has no package.json
+    // of its own, so the root is the fallback).
+    let pm = node_pm(&proj.dir, root);
     let mut body = format!(
         "name = \"{dish_name}\"\n\
-         language = \"node-npm\"\n\
+         language = \"{lang}\"\n\
          \n\
          # Migrated from project.json. Each [tasks.<name>] mirrors the\n\
          # Nx target with the same name. Review run / outputs / inputs\n\
          # against your build artefacts.\n",
+        lang = pm.language,
     );
 
     let rel_project_root = proj.rel_dir.to_string_lossy().to_string();
@@ -354,17 +307,6 @@ fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut Migratio
         // outputs/inputs/cache fall through correctly.
         let merged = merge_with_defaults(target, target_name, &nx.target_defaults);
 
-        if merged.cache == Some(false) {
-            report.push_note(
-                NoteKind::Skipped,
-                format!(
-                    "{}: target `{target_name}` has `cache: false` — bento has no \
-                     per-task no-cache flag; the task still runs but its output \
-                     WILL be cached. Use `bento --no-cache` for ad-hoc bypass.",
-                    rel_project_root
-                ),
-            );
-        }
         if !merged.depends_on.is_empty() {
             let names: Vec<String> = merged
                 .depends_on
@@ -374,7 +316,7 @@ fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut Migratio
                     NxDependsOn::Detailed { target } => target.clone(),
                 })
                 .collect();
-            report.push_note(
+            e.note(
                 NoteKind::Inferred,
                 format!(
                     "{}: target `{target_name}` had dependsOn = {names:?} — bento derives \
@@ -387,7 +329,7 @@ fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut Migratio
         }
         if !merged.configurations.is_empty() {
             let names: Vec<&String> = merged.configurations.keys().collect();
-            report.push_note(
+            e.note(
                 NoteKind::NotYetImplemented,
                 format!(
                     "{}: target `{target_name}` declares configurations {names:?} — only \
@@ -404,7 +346,7 @@ fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut Migratio
             continue;
         }
         if mapping.unknown_executor {
-            report.push_note(
+            e.note(
                 NoteKind::Inferred,
                 format!(
                     "{}: target `{target_name}` uses executor {:?} — emitted as a \
@@ -415,41 +357,24 @@ fn render_dish_toml(proj: &DiscoveredProject, nx: &NxJson, report: &mut Migratio
             );
         }
 
-        body.push('\n');
-        body.push_str(&format!("[tasks.{}]\n", toml_table_key(target_name)));
-        body.push_str(&format!("run = {}\n", toml_basic_string(&mapping.run)));
-
         let outputs = translate_outputs(&merged.outputs, &merged.options, &rel_project_root);
-        if !outputs.literals.is_empty() {
-            body.push_str(&format!(
-                "outputs = {}\n",
-                render_string_array(&outputs.literals)
-            ));
-        }
-        for note in outputs.notes {
-            report.push_note(
-                NoteKind::Inferred,
-                format!(
-                    "{}: target `{target_name}` outputs: {note}",
-                    rel_project_root
-                ),
-            );
-        }
-
         let inputs = translate_inputs(&merged.inputs, &nx.named_inputs, &rel_project_root);
-        if !inputs.literals.is_empty() {
-            body.push_str(&format!(
-                "inputs = {}\n",
-                render_string_array(&inputs.literals)
-            ));
-        }
-        for note in inputs.notes {
-            report.push_note(
+        body.push_str(&render_task(
+            target_name,
+            &TaskBlock {
+                run: &mapping.run,
+                inputs: &inputs.literals,
+                outputs: &outputs.literals,
+                // An Nx target IS the repo's declared CI surface; a
+                // custom name would otherwise be `bento run`-only.
+                ci: true,
+                no_cache: merged.cache == Some(false),
+            },
+        ));
+        for note in outputs.notes.iter().chain(inputs.notes.iter()) {
+            e.note(
                 NoteKind::Inferred,
-                format!(
-                    "{}: target `{target_name}` inputs: {note}",
-                    rel_project_root
-                ),
+                format!("{rel_project_root}: target `{target_name}`: {note}"),
             );
         }
     }
@@ -983,61 +908,21 @@ fn substitute_options(raw: &str, options: &BTreeMap<String, serde_json::Value>) 
     out
 }
 
-/// Strip a leading `@scope/` from a project name so the dish name
-/// reads as a clean identifier. `@acme/web` → `web`.
-fn infer_short_name(project_name: &str) -> String {
-    project_name
-        .rsplit_once('/')
-        .map(|(_, last)| last.to_string())
-        .unwrap_or_else(|| project_name.to_string())
-}
-
-fn render_string_array(xs: &[String]) -> String {
-    let mut s = String::from("[");
-    for (i, x) in xs.iter().enumerate() {
-        if i > 0 {
-            s.push_str(", ");
-        }
-        s.push_str(&toml_basic_string(x));
-    }
-    s.push(']');
-    s
-}
-
-// ── Helpers ────────────────────────────────────────────────────────
-
-fn parse_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let body = fs::read_to_string(path).with_context(|| format!("opening {}", path.display()))?;
-    let parsed = serde_json::from_str(&body)
-        .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    Ok(parsed)
-}
-
-fn write_or_simulate(
-    path: &Path,
-    body: &str,
-    dry_run: bool,
-    report: &mut MigrationReport,
-) -> Result<()> {
-    if !dry_run {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-        fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
-    }
-    report.push_file(path.to_path_buf(), body.len());
-    Ok(())
-}
-
-fn relative<'a>(p: &'a Path, root: &'a Path) -> &'a Path {
-    p.strip_prefix(root).unwrap_or(p)
-}
-
 // ── tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migrate::Options;
+
+    fn migrate(root: &Path, dry_run: bool, force: bool) -> MigrationReport {
+        run(Emitter::new(Options {
+            root: root.to_path_buf(),
+            dry_run,
+            force,
+        }))
+        .unwrap()
+    }
 
     fn write(path: PathBuf, body: &str) {
         if let Some(parent) = path.parent() {
@@ -1123,12 +1008,7 @@ mod tests {
     #[test]
     fn migrates_workspace_with_two_projects() {
         let tmp = fixture();
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), false, false);
 
         let written: Vec<_> = report
             .files_written
@@ -1185,29 +1065,48 @@ mod tests {
     }
 
     #[test]
-    fn refuses_to_overwrite_without_force() {
+    fn never_overwrites_bento_toml() {
         let tmp = fixture();
         std::fs::write(tmp.path().join("bento.toml"), "name = \"existing\"\n").unwrap();
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
-        assert!(report.has_conflicts());
+        migrate(tmp.path(), false, true);
         let body = std::fs::read_to_string(tmp.path().join("bento.toml")).unwrap();
         assert_eq!(body, "name = \"existing\"\n");
     }
 
     #[test]
+    fn translates_cache_false_and_marks_custom_targets_for_ci() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path().join("nx.json"), r#"{}"#);
+        write(
+            tmp.path().join("apps/web/project.json"),
+            r#"{
+                "name": "web",
+                "targets": {
+                    "e2e": {
+                        "executor": "@nx/playwright:playwright",
+                        "cache": false
+                    },
+                    "build": { "executor": "@nx/js:tsc" }
+                }
+            }"#,
+        );
+        migrate(tmp.path(), false, false);
+        let dish = std::fs::read_to_string(tmp.path().join("apps/web/dish.toml")).unwrap();
+        let e2e = dish.split("[tasks.e2e]").nth(1).unwrap();
+        assert!(e2e.contains("cache = false"), "{dish}");
+        assert!(e2e.contains("ci = true"), "{dish}");
+        // Lifecycle names always run in `bento ci` — no redundant flag.
+        let build = dish.split("[tasks.build]").nth(1).unwrap();
+        assert!(
+            !build.split("[tasks.").next().unwrap().contains("ci = true"),
+            "{dish}"
+        );
+    }
+
+    #[test]
     fn dry_run_writes_nothing() {
         let tmp = fixture();
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: true,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), true, false);
         assert!(!report.applied);
         assert!(!report.files_written.is_empty());
         assert!(!tmp.path().join("apps/web/dish.toml").exists());
@@ -1215,14 +1114,9 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_dependson_cache_false_and_configurations_as_notes() {
+    fn surfaces_dependson_and_configurations_as_notes() {
         let tmp = fixture();
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: true,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), true, false);
         let kinds: BTreeSet<_> = report.notes.iter().map(|n| n.kind).collect();
         // dependsOn from targetDefaults.build → Inferred note.
         assert!(
@@ -1251,12 +1145,7 @@ mod tests {
                 }
             }"#,
         );
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), false, false);
         assert!(tmp.path().join("apps/web/dish.toml").exists());
         let kinds: BTreeSet<_> = report.notes.iter().map(|n| n.kind).collect();
         assert!(
@@ -1280,12 +1169,7 @@ mod tests {
                 }
             }"#,
         );
-        let report = run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        let report = migrate(tmp.path(), false, false);
         let dish = std::fs::read_to_string(tmp.path().join("apps/special/dish.toml")).unwrap();
         assert!(dish.contains("[tasks.package]"));
         assert!(dish.contains(r#"run = "nx run {project}:package""#));
@@ -1316,12 +1200,7 @@ mod tests {
                 }
             }"#,
         );
-        run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        migrate(tmp.path(), false, false);
         let dish = std::fs::read_to_string(tmp.path().join("apps/legacy/dish.toml")).unwrap();
         assert!(dish.contains(r#"run = "jest""#));
     }
@@ -1342,12 +1221,7 @@ mod tests {
                 }
             }"#,
         );
-        run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        migrate(tmp.path(), false, false);
         let dish = std::fs::read_to_string(tmp.path().join("apps/multi/dish.toml")).unwrap();
         assert!(dish.contains(r#"run = "bump && publish""#));
     }
@@ -1368,12 +1242,7 @@ mod tests {
             tmp.path().join("packages/extra/project.json"),
             r#"{ "name": "extra", "targets": {} }"#,
         );
-        run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        migrate(tmp.path(), false, false);
         assert!(tmp.path().join("apps/web/dish.toml").exists());
         assert!(!tmp.path().join("packages/extra/dish.toml").exists());
     }
@@ -1392,12 +1261,7 @@ mod tests {
             tmp.path().join("node_modules/some-pkg/nested/project.json"),
             r#"{ "name": "nope", "targets": {} }"#,
         );
-        run(Options {
-            root: tmp.path().to_path_buf(),
-            dry_run: false,
-            force: false,
-        })
-        .unwrap();
+        migrate(tmp.path(), false, false);
         assert!(tmp.path().join("apps/web/dish.toml").exists());
         assert!(!tmp
             .path()
@@ -1484,13 +1348,6 @@ mod tests {
         };
         let merged = merge_with_defaults(&target, "build", &defaults);
         assert_eq!(merged.outputs, vec!["{projectRoot}/dist".to_string()]);
-    }
-
-    #[test]
-    fn infer_short_name_strips_scope() {
-        assert_eq!(infer_short_name("@acme/web"), "web");
-        assert_eq!(infer_short_name("just-a-name"), "just-a-name");
-        assert_eq!(infer_short_name("@acme/very/deep"), "deep");
     }
 
     #[test]

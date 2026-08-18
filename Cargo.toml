@@ -34,6 +34,10 @@ thiserror = "1"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# YAML for `bento migrate moon` (.moon/workspace.yml, moon.yml). The
+# crate is in maintenance mode upstream but is still the de-facto
+# serde YAML binding; nothing here needs a feature it lacks.
+serde_yaml = "0.9"
 toml = "0.8"
 toml_edit = "0.22"
 schemars = "1"
