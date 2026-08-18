@@ -138,7 +138,15 @@ impl LocalCache {
         for entry in std::fs::read_dir(&self.root)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() {
+            // Only our own artefacts — `BENTO_CACHE_DIR` can point at
+            // a shared dir, and `clear` must never become `rm *`.
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let ours = name.ends_with(".tar")
+                || name.ends_with(".inputs.json")
+                || name.ends_with(".tmp")
+                || name.ends_with(".remote-tmp");
+            if ours && path.is_file() {
                 std::fs::remove_file(path)?;
             }
         }
@@ -409,9 +417,27 @@ fn unpack_at<R: Read>(entry: &mut tar::Entry<R>, root: &Path, rel: &Path) -> Res
             ),
         }
     }
+    // Legit bundles hold regular files only (`bundle_tree` skips
+    // symlinks + dirs). A symlink or hard-link entry could redirect
+    // a later entry outside `root`, so refuse them outright, and
+    // check the *resolved* parent in case an earlier symlink on disk
+    // already points elsewhere.
+    if !entry.header().entry_type().is_file() {
+        anyhow::bail!(
+            "cache bundle entry `{}` is not a regular file — refusing extract",
+            rel.display()
+        );
+    }
     let dest = root.join(rel);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
+        let root_real = root.canonicalize()?;
+        if !parent.canonicalize()?.starts_with(&root_real) {
+            anyhow::bail!(
+                "cache bundle entry `{}` resolves outside the dish — refusing extract",
+                rel.display()
+            );
+        }
     }
     entry.unpack(&dest)?;
     Ok(())
@@ -807,6 +833,53 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let local = LocalCache::new(cache.path());
         assert!(local.find_by_prefix("ffffffffffff").unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_refuses_symlink_entries_and_escapes_through_them() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        let dish = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let key = make_key("hostile");
+
+        // Hand-built bundle: a symlink `outputs/l -> <outside>` then a
+        // regular file `outputs/l/pwned` that would be written through it.
+        let bundle = local.bundle_path(&key);
+        {
+            let mut w = tar::Builder::new(File::create(&bundle).unwrap());
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Symlink);
+            h.set_size(0);
+            h.set_mode(0o777);
+            h.set_cksum();
+            w.append_link(&mut h, "outputs/l", outside.path()).unwrap();
+            let data = b"pwned";
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            w.append_data(&mut h, "outputs/l/pwned", &data[..]).unwrap();
+            w.finish().unwrap();
+        }
+
+        let err = local.get(&key, dish.path(), None).unwrap_err();
+        assert!(format!("{err:#}").contains("not a regular file"), "{err:#}");
+        assert!(!outside.path().join("pwned").exists());
+        assert!(!dish.path().join("l").exists());
+    }
+
+    #[test]
+    fn clear_only_removes_bento_artefacts() {
+        let cache = tempfile::tempdir().unwrap();
+        let local = LocalCache::new(cache.path());
+        std::fs::write(cache.path().join("keep.txt"), b"x").unwrap();
+        std::fs::write(cache.path().join("abc.tar"), b"x").unwrap();
+        std::fs::write(cache.path().join("abc.inputs.json"), b"x").unwrap();
+        local.clear().unwrap();
+        assert!(cache.path().join("keep.txt").exists());
+        assert!(!cache.path().join("abc.tar").exists());
+        assert!(!cache.path().join("abc.inputs.json").exists());
     }
 
     #[test]
