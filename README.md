@@ -171,7 +171,7 @@ A minimal workspace needs just one `bentos/<name>.toml` and one `dish.toml`. Def
 | `bento doctor` | Health check: config, toolchains, cache, git, remotes |
 | `bento artifacts` | List resolved output paths per dish (post-build) |
 | `bento cache stats \| clear \| prune \| push \| pull` | Inspect, clear, bound, or sync cache tiers |
-| `bento toolchain list \| install \| pin` | Manage pinned language toolchains |
+| `bento toolchain list \| install \| pin <tool>=<ver>` | Manage pinned language toolchains; `pin` writes `[toolchain]` in `bento.toml` (comments + formatting preserved) |
 | `bento schema [target]` | Emit JSON Schema for any agent-consumable output type |
 
 Every reporting command takes `--json` for machine-readable output. (Streaming verbs — `bento dev`, `bento serve`, `bento run` — pass through to the wrapped process, so `--json` is a no-op there.) Run `bento <command> --help` for full flag detail.

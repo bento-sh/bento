@@ -14,7 +14,7 @@ pub fn run(global: &GlobalFlags, action: ToolchainAction) -> Result<i32> {
     match action {
         ToolchainAction::Install => install_all(global),
         ToolchainAction::List => list(global),
-        ToolchainAction::Pin { pin } => print_pin_advice(&pin),
+        ToolchainAction::Pin { pin: spec } => pin(global, &spec),
     }
 }
 
@@ -80,7 +80,14 @@ fn install_all(global: &GlobalFlags) -> Result<i32> {
 
     if planned.is_empty() && co_required.is_empty() {
         if global.json {
-            println!("{}", serde_json::json!({ "installed": [] }));
+            // Same three keys as a non-empty run — an agent parsing
+            // `.skipped` / `.failed` shouldn't have to special-case
+            // the empty plan.
+            crate::json::emit(&serde_json::json!({
+                "installed": [],
+                "skipped": [],
+                "failed": 0,
+            }))?;
         } else {
             println!("no toolchain pins found in this workspace");
             println!("(set [toolchain] in bento.toml to opt in)");
@@ -260,13 +267,9 @@ fn prepend_path(bin_dir: &std::path::Path) {
 // ── list ──────────────────────────────────────────────────────────
 
 fn list(global: &GlobalFlags) -> Result<i32> {
-    let store_root = match Store::default_root() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("could not determine toolchain root: {e}");
-            return Ok(1);
-        }
-    };
+    // Propagate rather than printing + exit 1: with `--json` the bare
+    // stderr line left the caller with an exit code and no envelope.
+    let store_root = Store::default_root().context("resolving the toolchain store root")?;
     let store = Store::new(&store_root);
     let entries = store.list()?;
 
@@ -295,23 +298,84 @@ fn list(global: &GlobalFlags) -> Result<i32> {
     Ok(0)
 }
 
-// ── pin (stub for now) ────────────────────────────────────────────
+// ── pin ───────────────────────────────────────────────────────────
 
-fn print_pin_advice(pin: &str) -> Result<i32> {
-    eprintln!(
-        "`bento toolchain pin` is not implemented yet (preserves your bento.toml \
-formatting safely lands in a future release)."
-    );
-    eprintln!();
-    eprintln!("For now, edit bento.toml directly:");
-    eprintln!();
-    eprintln!("    [toolchain]");
-    if let Some((tool, version)) = pin.split_once('=') {
-        eprintln!("    {tool} = \"{version}\"");
-    } else {
-        eprintln!("    # supply as <tool>=<version>, e.g. go=\"1.22.3\"");
+/// Write `<tool> = "<version>"` into the workspace `bento.toml`'s
+/// `[toolchain]` table. `toml_edit` so comments, ordering and
+/// formatting elsewhere in the file survive — same round-trip
+/// contract as `scaffold::wire_into_bento`.
+fn pin(global: &GlobalFlags, spec: &str) -> Result<i32> {
+    let (tool, version) = parse_pin(spec)?;
+    let root = crate::resolve_workspace_root(global)?;
+    let path = root.join("bento.toml");
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let (updated, previous) =
+        apply_pin(&raw, tool, version).with_context(|| format!("editing {}", path.display()))?;
+
+    let changed = previous.as_deref() != Some(version);
+    if changed {
+        std::fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))?;
     }
-    Ok(2)
+
+    if global.json {
+        crate::json::emit(&serde_json::json!({
+            "tool": tool,
+            "version": version,
+            "previous": previous,
+            "changed": changed,
+            "path": path.to_string_lossy(),
+        }))?;
+        return Ok(0);
+    }
+    match (&previous, changed) {
+        (_, false) => {
+            println!(
+                "{tool} is already pinned to {version} in {}",
+                path.display()
+            );
+            return Ok(0);
+        }
+        (Some(p), _) => println!("pinned {tool} = {version} in {} (was {p})", path.display()),
+        (None, _) => println!("pinned {tool} = {version} in {}", path.display()),
+    }
+    if Installer::builtin().is_ok_and(|i| i.tool(tool).is_none()) {
+        println!(
+            "note: bento has no built-in installer for '{tool}' — the pin feeds the \
+             cache key and doctor checks, but the binary has to be on PATH already"
+        );
+    } else {
+        println!("run `bento toolchain install` to fetch it");
+    }
+    Ok(0)
+}
+
+/// Set `[toolchain] <tool> = "<version>"` in `raw`, returning the new
+/// document text and whatever was pinned before. `toml_edit` keeps
+/// every comment, key order and bit of formatting elsewhere in the
+/// file intact — same round-trip contract as
+/// `scaffold::wire_into_bento`.
+fn apply_pin(raw: &str, tool: &str, version: &str) -> Result<(String, Option<String>)> {
+    use toml_edit::{value, DocumentMut, Item, Table};
+
+    let mut doc: DocumentMut = raw.parse().context("parsing TOML")?;
+    let table = doc
+        .entry("toolchain")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("expected `[toolchain]` to be a table"))?;
+    let previous = table.get(tool).and_then(|i| i.as_str()).map(str::to_string);
+    table[tool] = value(version);
+    Ok((doc.to_string(), previous))
+}
+
+fn parse_pin(spec: &str) -> Result<(&str, &str)> {
+    match spec.split_once('=') {
+        Some((tool, version)) if !tool.trim().is_empty() && !version.trim().is_empty() => {
+            Ok((tool.trim(), version.trim()))
+        }
+        _ => anyhow::bail!("expected `<tool>=<version>` (e.g. `go=1.22.3`), got {spec:?}"),
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────
@@ -392,6 +456,38 @@ mod tests {
         let pins = BTreeMap::new();
         let co = collect_co_required(&installer, &pins, &empty_planned());
         assert!(co.is_empty());
+    }
+
+    #[test]
+    fn apply_pin_adds_table_and_preserves_the_rest() {
+        let raw = "# repo defaults\nname = \"acme\"\n\n[cache]\n# keep me\nremote = \"s3://x\"\n";
+        let (out, previous) = apply_pin(raw, "go", "1.22.3").unwrap();
+        assert_eq!(previous, None);
+        assert!(out.contains("# repo defaults"), "got: {out}");
+        assert!(out.contains("# keep me"), "got: {out}");
+        assert!(out.contains("remote = \"s3://x\""), "got: {out}");
+        let parsed: toml::Value = toml::from_str(&out).unwrap();
+        assert_eq!(parsed["toolchain"]["go"].as_str(), Some("1.22.3"));
+    }
+
+    #[test]
+    fn apply_pin_replaces_an_existing_pin_and_reports_the_old_one() {
+        let raw = "[toolchain]\n# pinned by CI\ngo = \"1.21.0\"\nnode = \"20.11.0\"\n";
+        let (out, previous) = apply_pin(raw, "go", "1.22.3").unwrap();
+        assert_eq!(previous.as_deref(), Some("1.21.0"));
+        assert!(out.contains("# pinned by CI"), "got: {out}");
+        let parsed: toml::Value = toml::from_str(&out).unwrap();
+        assert_eq!(parsed["toolchain"]["go"].as_str(), Some("1.22.3"));
+        assert_eq!(parsed["toolchain"]["node"].as_str(), Some("20.11.0"));
+    }
+
+    #[test]
+    fn parse_pin_requires_both_halves() {
+        assert_eq!(parse_pin("go=1.22.3").unwrap(), ("go", "1.22.3"));
+        assert_eq!(parse_pin(" go = 1.22.3 ").unwrap(), ("go", "1.22.3"));
+        for bad in ["go", "go=", "=1.22.3", ""] {
+            assert!(parse_pin(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]
