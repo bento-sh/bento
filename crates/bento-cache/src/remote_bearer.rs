@@ -321,11 +321,7 @@ impl RemoteCache for BearerRemote {
             return Ok(false);
         };
 
-        let tmp = tmp_sibling(dest);
-        std::fs::write(&tmp, &data)
-            .with_context(|| format!("writing remote bundle to {}", tmp.display()))?;
-        std::fs::rename(&tmp, dest)
-            .with_context(|| format!("moving {} → {}", tmp.display(), dest.display()))?;
+        crate::local::promote_remote_bundle(dest, &data)?;
         Ok(true)
     }
 
@@ -412,12 +408,6 @@ fn parse_bento_url(url: &str) -> Result<String> {
         Some(path) if !path.is_empty() => format!("https://{host}/{path}"),
         _ => format!("https://{host}"),
     })
-}
-
-fn tmp_sibling(final_path: &Path) -> std::path::PathBuf {
-    let mut s = final_path.as_os_str().to_os_string();
-    s.push(".remote-tmp");
-    std::path::PathBuf::from(s)
 }
 
 #[cfg(test)]

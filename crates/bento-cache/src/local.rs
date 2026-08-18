@@ -2,7 +2,7 @@
 //!
 //! Layout (flat):
 //!   `<root>/<key>.tar`          — bundle for a cache entry
-//!   `<root>/<key>.tar.tmp`      — in-flight write (renamed atomically)
+//!   `<root>/bento*.tmp`         — in-flight write (renamed atomically)
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -92,7 +92,8 @@ impl LocalCache {
     /// `<dish_dir>` plus outputs matching `workspace_output_globs` under
     /// `<workspace_root>`, alongside the task's stdout/stderr/exit code,
     /// into a tarball at `<root>/<key>.tar`. Write is atomic via rename
-    /// from a `.tmp` sibling.
+    /// from a uniquely-named temp file, so two processes putting the same
+    /// key can't interleave into one shared scratch path.
     ///
     /// Errors when `workspace_output_globs` is non-empty and
     /// `workspace_root` is `None` — defends against silent cache-of-nothing
@@ -110,24 +111,19 @@ impl LocalCache {
             .with_context(|| format!("creating cache root {}", self.root.display()))?;
 
         let final_path = self.bundle_path(key);
-        let tmp_path = tmp_path(&final_path);
+        let mut tmp = new_temp_in(&self.root)?;
 
-        // write() closes the file before rename — important on Windows and
-        // cheap insurance elsewhere.
         write_bundle(
-            &tmp_path,
+            tmp.as_file_mut(),
             dish_dir,
             output_globs,
             workspace_root,
             workspace_output_globs,
             result,
         )
-        .with_context(|| format!("writing bundle {}", tmp_path.display()))?;
+        .with_context(|| format!("writing bundle for {}", key.short()))?;
 
-        std::fs::rename(&tmp_path, &final_path).with_context(|| {
-            format!("renaming {} → {}", tmp_path.display(), final_path.display())
-        })?;
-        Ok(())
+        persist_temp(tmp, &final_path)
     }
 
     /// Delete every cache entry (but leave the root directory in place).
@@ -158,14 +154,12 @@ impl LocalCache {
     pub fn put_manifest(&self, key: &CacheKey, manifest: &InputManifest) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;
         let final_path = self.manifest_path(key);
-        let tmp_path = tmp_path(&final_path);
         let bytes = serde_json::to_vec_pretty(manifest)?;
-        std::fs::write(&tmp_path, &bytes)
-            .with_context(|| format!("writing manifest {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &final_path).with_context(|| {
-            format!("renaming {} → {}", tmp_path.display(), final_path.display())
-        })?;
-        Ok(())
+        let mut tmp = new_temp_in(&self.root)?;
+        tmp.as_file_mut()
+            .write_all(&bytes)
+            .with_context(|| format!("writing manifest for {}", key.short()))?;
+        persist_temp(tmp, &final_path)
     }
 
     /// Read the manifest sidecar for a cache entry, if one exists.
@@ -249,18 +243,44 @@ impl LocalCache {
     }
 }
 
-fn tmp_path(final_path: &Path) -> PathBuf {
-    let mut s = final_path.as_os_str().to_os_string();
-    s.push(".tmp");
-    PathBuf::from(s)
+/// Scratch file for an about-to-be-published cache artefact. The `.tmp`
+/// suffix is load-bearing: [`LocalCache::clear`] recognises it as ours and
+/// [`is_bundle`] doesn't, so a crashed writer leaves something collectable
+/// that never reads back as a cache hit.
+pub(crate) fn new_temp_in(dir: &Path) -> Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .prefix("bento")
+        .suffix(".tmp")
+        .tempfile_in(dir)
+        .with_context(|| format!("creating a temp file in {}", dir.display()))
+}
+
+pub(crate) fn persist_temp(tmp: tempfile::NamedTempFile, final_path: &Path) -> Result<()> {
+    tmp.persist(final_path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("publishing {}", final_path.display()))?;
+    Ok(())
+}
+
+/// Land a bundle downloaded from a remote tier at `dest`. Shared by both
+/// remote backends so neither can invent its own promotion rules.
+pub(crate) fn promote_remote_bundle(dest: &Path, data: &[u8]) -> Result<()> {
+    let dir = dest.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating cache root {}", dir.display()))?;
+    let mut tmp = new_temp_in(dir)?;
+    tmp.as_file_mut()
+        .write_all(data)
+        .with_context(|| format!("writing remote bundle to {}", tmp.path().display()))?;
+    persist_temp(tmp, dest)
 }
 
 fn is_bundle(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "tar")
 }
 
-fn write_bundle(
-    out: &Path,
+fn write_bundle<W: Write>(
+    out: W,
     dish_dir: &Path,
     output_globs: &[String],
     workspace_root: Option<&Path>,
@@ -274,8 +294,7 @@ fn write_bundle(
         );
     }
 
-    let file = File::create(out)?;
-    let mut tar = tar::Builder::new(file);
+    let mut tar = tar::Builder::new(out);
 
     let meta = Metadata {
         version: BUNDLE_VERSION,
@@ -696,6 +715,61 @@ mod tests {
             std::fs::read(restore.path().join("out.bin")).unwrap(),
             b"second"
         );
+    }
+
+    #[test]
+    fn concurrent_puts_of_one_key_never_interleave() {
+        // Two writers racing on the same key used to share a single
+        // `<key>.tar.tmp`, so the loser's tar bytes could land inside the
+        // winner's file. Whoever wins the rename must produce a bundle
+        // that extracts cleanly.
+        let cache = tempfile::tempdir().unwrap();
+        let key = make_key("contended");
+        // Bodies differ in length so a spliced file can't accidentally
+        // still parse as one of them.
+        let bodies: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 1 << (10 + i)]).collect();
+        let dishes: Vec<_> = bodies
+            .iter()
+            .map(|b| make_dish(&[("out.bin", b)]))
+            .collect();
+
+        std::thread::scope(|s| {
+            for dish in &dishes {
+                let root = cache.path().to_path_buf();
+                let key = key.clone();
+                s.spawn(move || {
+                    LocalCache::new(root)
+                        .put(
+                            &key,
+                            dish.path(),
+                            &["out.bin".into()],
+                            None,
+                            &[],
+                            &TaskResult::default(),
+                        )
+                        .unwrap();
+                });
+            }
+        });
+
+        let restore = tempfile::tempdir().unwrap();
+        LocalCache::new(cache.path())
+            .get(&key, restore.path(), None)
+            .unwrap()
+            .expect("bundle must exist");
+        let restored = std::fs::read(restore.path().join("out.bin")).unwrap();
+        assert!(
+            restored.iter().all(|b| *b == restored[0]) && restored.len().is_power_of_two(),
+            "restored output is a splice of two writers"
+        );
+
+        // No scratch files survive a clean run.
+        let strays: Vec<_> = std::fs::read_dir(cache.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "left temp files behind: {strays:?}");
     }
 
     #[test]

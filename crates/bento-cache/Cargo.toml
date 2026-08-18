@@ -35,8 +35,10 @@ reqwest.workspace = true
 # alongside the bearer remote that consumes the token.
 keyring.workspace = true
 dirs.workspace = true
+# Unique-per-writer temp files: two processes putting the same key must
+# not share one `<key>.tar.tmp` and interleave into each other's bytes.
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 wiremock.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

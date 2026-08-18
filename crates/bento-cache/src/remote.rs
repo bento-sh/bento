@@ -122,11 +122,7 @@ impl RemoteCache for S3Remote {
             }
         };
 
-        let tmp = tmp_sibling(dest);
-        std::fs::write(&tmp, &data)
-            .with_context(|| format!("writing remote bundle to {}", tmp.display()))?;
-        std::fs::rename(&tmp, dest)
-            .with_context(|| format!("moving {} → {}", tmp.display(), dest.display()))?;
+        crate::local::promote_remote_bundle(dest, &data)?;
         Ok(true)
     }
 
@@ -160,12 +156,6 @@ fn parse_s3_url(url: &str) -> Result<(String, String)> {
     }
     let prefix = parts.next().unwrap_or("").trim_end_matches('/').to_string();
     Ok((bucket, prefix))
-}
-
-fn tmp_sibling(final_path: &Path) -> std::path::PathBuf {
-    let mut s = final_path.as_os_str().to_os_string();
-    s.push(".remote-tmp");
-    std::path::PathBuf::from(s)
 }
 
 #[cfg(test)]
