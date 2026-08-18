@@ -47,6 +47,7 @@ pub use bento_adapters::{
     InstallProbe, Integration, IntegrationRegistry, IntegrationTask, IntegrationTaskKind,
     LanguageAdapter, ParserId, Severity,
 };
+pub use bento_cache::client_id;
 pub use bento_cache::{
     build_remote,
     token::{resolve_cache_token, token_env_name},

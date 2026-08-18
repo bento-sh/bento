@@ -12,7 +12,9 @@
 //!
 //! Every request carries `x-bento-cas-version:
 //! <bento_cas_protocol::CAS_PROTOCOL_VERSION>` so a server can tell which
-//! wire contract the client speaks.
+//! wire contract the client speaks, plus `x-bento-client: <kind>`
+//! ([`crate::client_id`]) so it can attribute the traffic to an agent
+//! or a human.
 //!
 //! - `HEAD <base>/cache/<blake3>` — 200 hit, 404 miss, 401/403 auth.
 //! - `GET  <base>/cache/<blake3>` — 200 + body, 404 miss, 413 over-quota.
@@ -139,10 +141,18 @@ impl BearerRemote {
             bento_cas_protocol::CAS_VERSION_HEADER,
             bento_cas_protocol::CAS_PROTOCOL_VERSION.into(),
         );
+        // Coarse client kind on every cache op — functional, not
+        // telemetry: it's what lets a team see agent vs human cache
+        // traffic at all. Carries no identity, so it isn't gated on
+        // the telemetry posture the build report honours.
+        headers.insert(
+            bento_cas_protocol::CLIENT_HEADER,
+            reqwest::header::HeaderValue::from_static(crate::client_id::detect()),
+        );
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
-            .user_agent(concat!("bento/", env!("CARGO_PKG_VERSION")))
+            .user_agent(crate::client_id::user_agent())
             .default_headers(headers)
             .build()
             .context("building reqwest client for bento:// remote cache")?;

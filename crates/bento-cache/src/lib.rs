@@ -15,7 +15,11 @@
 //!   `outputs/…`  — each output file at its relative-to-`dish_dir` path
 //!
 //! Compression (zstd) lands with the remote cache work in P3.
+//!
+//! [`client_id`] lives here rather than in `bento-core` so the bearer
+//! remote can tag its requests; `bento_core::client_id` re-exports it.
 
+pub mod client_id;
 mod key;
 mod local;
 mod manifest;

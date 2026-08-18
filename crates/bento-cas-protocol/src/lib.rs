@@ -42,6 +42,55 @@ pub const CAS_PROTOCOL_VERSION: u32 = 1;
 pub const CAS_VERSION_HEADER: &str = "x-bento-cas-version";
 
 // ---------------------------------------------------------------------------
+// Client attribution
+// ---------------------------------------------------------------------------
+
+/// Header carrying a coarse client kind — which tool drove this build.
+///
+/// One of [`CLIENT_KINDS`]; the value is a *category*, never an identity.
+/// The CLI derives it from environment-variable presence alone (see
+/// `bento_core::client_id`), so nothing user-specific crosses the wire.
+pub const CLIENT_HEADER: &str = "x-bento-client";
+
+/// Closed allowlist of [`CLIENT_HEADER`] values.
+///
+/// Closed on purpose: a server stores the *validated* kind, never the
+/// raw header, so a new client can't grow the cardinality of a grouped
+/// dashboard column (or inject anything) by inventing a value. Adding a
+/// kind means shipping it here first — [`normalize_client`] folds
+/// anything else to `"other"`.
+pub const CLIENT_KINDS: &[&str] = &[
+    "claude-code",
+    "codex",
+    "cursor",
+    "aider",
+    "copilot",
+    "github-actions",
+    "ci",
+    "human",
+    "other",
+    "unknown",
+];
+
+/// Fold a raw [`CLIENT_HEADER`] value into [`CLIENT_KINDS`].
+///
+/// - absent → `"unknown"` (an older CLI, or a client that doesn't send it)
+/// - present but not in the allowlist → `"other"`
+///
+/// The return type is `&'static str` borrowed from [`CLIENT_KINDS`], so a
+/// caller physically cannot persist attacker-supplied bytes.
+pub fn normalize_client(raw: Option<&str>) -> &'static str {
+    let Some(raw) = raw else {
+        return "unknown";
+    };
+    CLIENT_KINDS
+        .iter()
+        .find(|k| **k == raw)
+        .copied()
+        .unwrap_or("other")
+}
+
+// ---------------------------------------------------------------------------
 // Team + token identifiers
 // ---------------------------------------------------------------------------
 
@@ -441,6 +490,11 @@ pub struct BuildReport {
     pub status: BuildStatus,
     /// Wall-clock duration of the invocation in milliseconds.
     pub duration_ms: u64,
+    /// Coarse client kind, one of [`CLIENT_KINDS`]. Additive: absent
+    /// from reports sent by CLIs older than this field, which servers
+    /// read as `"unknown"` via [`normalize_client`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
 }
 
 /// Outcome of a `bento ci` / `bento build` invocation.
@@ -615,6 +669,7 @@ mod tests {
             cache_hit_ratio: 0.93,
             status: BuildStatus::Success,
             duration_ms: 1_640,
+            client: Some("claude-code".to_owned()),
         };
         let json = serde_json::to_string(&r).unwrap();
         let back: BuildReport = serde_json::from_str(&json).unwrap();
@@ -641,10 +696,12 @@ mod tests {
             cache_hit_ratio: 0.0,
             status: BuildStatus::Failed,
             duration_ms: 412,
+            client: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("branch"));
         assert!(!json.contains("sha"));
+        assert!(!json.contains("client"));
         assert!(json.contains("\"failed\""));
     }
 
@@ -673,5 +730,30 @@ mod tests {
         ] {
             assert!(json.contains(variant), "schema missing variant {variant}");
         }
+    }
+
+    #[test]
+    fn normalize_client_folds_to_the_allowlist() {
+        assert_eq!(normalize_client(None), "unknown");
+        assert_eq!(normalize_client(Some("claude-code")), "claude-code");
+        assert_eq!(normalize_client(Some("human")), "human");
+        // Anything off-list collapses to "other" — including injection
+        // attempts, which must never reach a query or a stored row.
+        for raw in [
+            "'; DROP TABLE recent_builds; --",
+            "",
+            "Claude-Code",
+            "\u{0}",
+        ] {
+            assert_eq!(normalize_client(Some(raw)), "other", "raw={raw:?}");
+        }
+    }
+
+    #[test]
+    fn build_report_without_client_deserializes_to_none() {
+        let json = r#"{"package":"api","cache_hit_ratio":0.5,"status":"success","duration_ms":10}"#;
+        let r: BuildReport = serde_json::from_str(json).unwrap();
+        assert_eq!(r.client, None);
+        assert_eq!(normalize_client(r.client.as_deref()), "unknown");
     }
 }

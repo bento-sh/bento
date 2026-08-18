@@ -305,6 +305,27 @@ echo "exit=$?"   # expect 2
 
 ---
 
+## Client attribution
+
+Requests bento makes to a `bento://` cache server carry a coarse client
+kind in `x-bento-client` (and in the User-Agent): one of `claude-code`,
+`codex`, `cursor`, `aider`, `copilot`, `github-actions`, `ci`, `human`,
+`other`, `unknown`. It's what lets a team answer "how much of our build
+traffic is agents?" — the dashboard groups builds by it.
+
+Detection reads environment-variable **presence** only, never values
+(`CLAUDECODE`, `CODEX_*`, `CURSOR_*`, …), first match wins, and an
+agent inside CI still reports as the agent. Nothing user-specific is
+derived or sent; the value is a category out of a closed ten-item list,
+and a server folds anything unrecognised to `other`.
+
+`[telemetry] enabled = false` (or `BENTO_TELEMETRY=0`) suppresses the
+end-of-run build report entirely, client kind included. The header on
+plain cache operations is not telemetry and stays on — it carries no
+identity, and without it a cache request is unattributable at all.
+
+---
+
 ## Related
 
 - [configuration.md](./configuration.md) — every TOML field.

@@ -31,6 +31,7 @@ schemars.workspace = true
 bento-core.workspace = true
 bento-config.workspace = true
 bento-cache.workspace = true
+bento-cas-protocol.workspace = true
 bento-adapters.workspace = true
 bento-watch.workspace = true
 globset.workspace = true

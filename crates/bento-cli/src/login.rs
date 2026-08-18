@@ -118,6 +118,16 @@ pub fn run() -> Result<i32> {
     Ok(0)
 }
 
+/// Both login requests carry the same identity: a versioned UA and the
+/// coarse client kind, so the control plane can tell an agent-driven
+/// `bento login` from a human one at the device-code step.
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(HTTP_TIMEOUT)
+        .user_agent(&bento_cache::client_id::user_agent())
+        .build()
+}
+
 fn api_base() -> String {
     std::env::var(API_BASE_ENV)
         .map(|s| s.trim_end_matches('/').to_string())
@@ -126,10 +136,14 @@ fn api_base() -> String {
 
 fn request_device_code(api_base: &str) -> Result<DeviceCodeResponse> {
     let url = format!("{api_base}/v1/cli/device-code");
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
+    let agent = agent();
     let resp = agent
         .post(&url)
         .set("content-type", "application/json")
+        .set(
+            bento_cas_protocol::CLIENT_HEADER,
+            bento_cache::client_id::detect(),
+        )
         // Empty body — the endpoint reads the client IP from headers.
         .send_string("{}")
         .map_err(|e| classify_ureq("device-code", e))?;
@@ -138,7 +152,7 @@ fn request_device_code(api_base: &str) -> Result<DeviceCodeResponse> {
 
 fn poll_for_jwt(api_base: &str, device: &DeviceCodeResponse) -> Result<String> {
     let url = format!("{api_base}/v1/cli/exchange");
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
+    let agent = agent();
     let body = serde_json::to_string(&ExchangeRequest {
         device_code: &device.device_code,
     })?;
@@ -160,6 +174,10 @@ fn poll_for_jwt(api_base: &str, device: &DeviceCodeResponse) -> Result<String> {
         match agent
             .post(&url)
             .set("content-type", "application/json")
+            .set(
+                bento_cas_protocol::CLIENT_HEADER,
+                bento_cache::client_id::detect(),
+            )
             .send_string(&body)
         {
             Ok(resp) => {

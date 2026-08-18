@@ -20,6 +20,11 @@
 //! `bento doctor` surfaces the resolved posture as the
 //! `telemetry.posture` check.
 //!
+//! Opting out suppresses the whole report, `client` kind included. The
+//! `x-bento-client` header on plain cache ops is a different thing and
+//! stays on: it carries no identity and it's what makes the cache
+//! attributable at all.
+//!
 //! # Posture
 //!
 //! Best-effort. Any failure (no remote configured, no token, network
@@ -122,13 +127,17 @@ pub fn send(
 
     let agent = ureq::AgentBuilder::new()
         .timeout(POST_TIMEOUT)
-        .user_agent(concat!("bento-cli/", env!("CARGO_PKG_VERSION"), " report"))
+        .user_agent(&bento_cache::client_id::user_agent())
         .build();
 
     match agent
         .post(&url)
         .set("Authorization", &format!("Bearer {token}"))
         .set("Content-Type", "application/json")
+        .set(
+            bento_cas_protocol::CLIENT_HEADER,
+            bento_cache::client_id::detect(),
+        )
         .send_string(&json)
     {
         Ok(resp) => {
@@ -194,6 +203,7 @@ fn build_report_from(report: &ExecutionReport, package: String) -> BuildReport {
         cache_hit_ratio,
         status,
         duration_ms: s.duration_ms,
+        client: Some(bento_cache::client_id::detect().to_owned()),
     }
 }
 
@@ -367,6 +377,16 @@ mod tests {
         });
         let br = build_report_from(&r, "x".into());
         assert_eq!(br.duration_ms, 4321);
+    }
+
+    #[test]
+    fn client_kind_is_stamped_and_valid() {
+        let br = build_report_from(&report_with(ExecutionSummary::default()), "x".into());
+        let client = br.client.expect("report must carry a client kind");
+        assert!(
+            bento_cas_protocol::CLIENT_KINDS.contains(&client.as_str()),
+            "client {client:?} is not in the protocol allowlist"
+        );
     }
 
     #[test]

@@ -1021,9 +1021,16 @@ fn decode_jwt_claims(jwt: &str) -> Result<bento_cas_protocol::Claims, String> {
 fn probe(url: &str, name: &'static str) -> DoctorCheck {
     let agent = ureq::AgentBuilder::new()
         .timeout(CLOUD_PROBE_TIMEOUT)
-        .user_agent(concat!("bento-cli/", env!("CARGO_PKG_VERSION"), " doctor"))
+        .user_agent(&bento_cache::client_id::user_agent())
         .build();
-    match agent.get(url).call() {
+    match agent
+        .get(url)
+        .set(
+            bento_cas_protocol::CLIENT_HEADER,
+            bento_cache::client_id::detect(),
+        )
+        .call()
+    {
         Ok(resp) => {
             let status = resp.status();
             if (200..300).contains(&status) {
