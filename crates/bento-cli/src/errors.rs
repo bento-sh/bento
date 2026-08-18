@@ -481,7 +481,17 @@ pub fn emit(err: &anyhow::Error, as_json: bool) {
             ),
         }
     } else {
-        eprintln!("{}: {err:#}", crate::style::red("error"));
+        // Humans get the same hint + next_steps the JSON envelope
+        // carries — the message alone ("'x' is not a known dish") left
+        // them without the list of names agents already had.
+        let structured = classify(err);
+        eprintln!("{}: {}", crate::style::red("error"), structured.message);
+        if let Some(hint) = &structured.hint {
+            eprintln!("  hint: {hint}");
+        }
+        for step in &structured.next_steps {
+            eprintln!("  → {step}");
+        }
     }
 }
 

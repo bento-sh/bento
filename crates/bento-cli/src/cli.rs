@@ -2,16 +2,17 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-/// bento — polyglot monorepo orchestrator.
+/// bento — polyglot monorepo orchestrator, built for agents first.
 ///
-/// Wraps native package managers (Go, Bun, Deno, npm/pnpm, Cargo) and only
-/// rebuilds what changed via content hashing. Multi-tier cache: local, CI,
-/// remote. One-line GitHub Action.
+/// One CLI over npm / pnpm / yarn / bun / deno / cargo / go / pip / uv /
+/// bundle / composer / mvn / gradle: `bento ci` plans, builds, tests and
+/// lints every dish, rebuilding only what changed (content-hash cache:
+/// local, CI, remote). `--json` everywhere; `bento prime` to orient.
 #[derive(Parser, Debug)]
 #[command(
     name = "bento",
     version,
-    about = "Polyglot monorepo orchestrator. Cargo-grade speed, Vercel-grade DX.",
+    about = "Polyglot monorepo orchestrator — built for agents, first-class for humans.",
     propagate_version = true,
     arg_required_else_help = true
 )]
@@ -70,6 +71,8 @@ pub struct GlobalFlags {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     // ── Scaffolding ────────────────────────────────────────────────
+    /// Scaffold bento config; auto-detect every dish in an existing repo
+    ///
     /// Scaffold bento.toml and bentos/ in the current repo. By default,
     /// walks subdirectories looking for languages bento knows about and
     /// adopts each as a dish (writes only dish.toml, sources untouched).
@@ -80,6 +83,8 @@ pub enum Command {
         no_detect: bool,
     },
 
+    /// Convert turbo / nx / lerna / moon / rush / make config to bento
+    ///
     /// Convert a competing monorepo tool's config into bento config.
     /// Reads the source tool's config (turbo.json, nx.json, etc.) plus
     /// per-package manifests; emits a workspace bento.toml, per-package
@@ -97,6 +102,8 @@ pub enum Command {
     Box(BoxAction),
 
     // ── Planning + execution ───────────────────────────────────────
+    /// Workspace snapshot + recommended next verb (run first in a session)
+    ///
     /// Orient an agent to this workspace — inventory, cache state,
     /// plan preview, and a recommended next verb. Meant as the first
     /// command an agent (or human) runs in a fresh session.
@@ -121,6 +128,8 @@ pub enum Command {
     /// Plan and execute — the GitHub Action entry point
     Ci,
 
+    /// Install every dish's deps via its native package manager
+    ///
     /// Install dish dependencies (node_modules, vendor, .venv, …) via
     /// each adapter's native command. The one-liner equivalent of
     /// running `npm ci` / `go mod download` / `composer install` /
@@ -147,6 +156,8 @@ pub enum Command {
         target: Option<String>,
     },
 
+    /// Fast type-check (cargo check, go vet, …) for a bento or dish
+    ///
     /// Type-check a bento or single dish — the language-native
     /// fast-feedback verb (`cargo check`, `go vet`, …). Order of
     /// magnitude faster than `bento build` for catching compile / type
@@ -217,6 +228,8 @@ pub enum Command {
         force: bool,
     },
 
+    /// Re-send post-deploy notifications without redeploying
+    ///
     /// Re-fire Notify-kind integration tasks (garnishes) using the
     /// last deploy's payload — useful after fixing a broken webhook
     /// without re-deploying the code.
@@ -239,6 +252,8 @@ pub enum Command {
     },
 
     // ── Dev experience ─────────────────────────────────────────────
+    /// Run every dish in a bento with hot reload
+    ///
     /// Run all dishes in a bento with hot reload. `<bento>` is required —
     /// pass the bento name from `bento box list`.
     Serve {
@@ -246,6 +261,8 @@ pub enum Command {
         bento: String,
     },
 
+    /// Run one dish in dev mode with hot reload
+    ///
     /// Run a single dish in dev mode. `<dish>` is required — pass the
     /// dish name from `bento dish list`.
     Dev {
@@ -253,6 +270,8 @@ pub enum Command {
         dish: String,
     },
 
+    /// Add packages to a dish via its native package manager
+    ///
     /// Add one or more packages as dependencies of a dish. Wraps the
     /// dish's native package manager (`cargo add`, `bun add`, `npm
     /// install --save`, `pnpm add`, `yarn add`, `go get`) so agents
@@ -288,6 +307,8 @@ pub enum Command {
         dev: bool,
     },
 
+    /// Run a custom [tasks.<name>] in a dish, uncached, forwarding args
+    ///
     /// Invoke a named `[tasks.<name>]` block in a dish, forwarding any
     /// trailing args. Bypasses the cache — use `bento build|test|lint`
     /// for cacheable lifecycle verbs. Stdout/stderr stream straight
@@ -318,6 +339,8 @@ pub enum Command {
     Cache(CacheAction),
 
     // ── Secrets ────────────────────────────────────────────────────
+    /// Manage deploy-target secrets (Railway, Cloudflare)
+    ///
     /// Manage deploy-target secrets (Cloudflare Workers/Pages, Railway).
     /// Thin wrapper over each platform's native CLI — values never
     /// enter bento's surface beyond the single put call.
@@ -325,6 +348,8 @@ pub enum Command {
     Secret(SecretAction),
 
     // ── Debugging + introspection ──────────────────────────────────
+    /// Explain a cache key: every hashed input behind <dish>:<task> or a hash
+    ///
     /// Explain why a task's cache entry is what it is — prints the
     /// full input manifest (every hashed file, toolchain, env var).
     /// Accepts either `<dish>:<task>` (e.g. `bento why marketing:lint`)
@@ -381,6 +406,8 @@ pub enum Command {
     },
 
     // ── MCP ────────────────────────────────────────────────────────
+    /// Register bento-mcp with Claude Code / Cursor / Codex / … clients
+    ///
     /// Manage the MCP (Model Context Protocol) server entry across
     /// agent clients (Claude Code, Claude Desktop, Cursor, Windsurf).
     #[command(subcommand)]
@@ -391,6 +418,8 @@ pub enum Command {
     #[command(subcommand)]
     Toolchain(ToolchainAction),
 
+    /// Bump version, refresh Cargo.lock, commit and tag (bento repo only)
+    ///
     /// Cut a release: bump workspace version, refresh Cargo.lock,
     /// commit, tag locally. Does not push — prints the push commands
     /// for you to run after reviewing.
@@ -402,6 +431,8 @@ pub enum Command {
         spec: String,
     },
 
+    /// Sign in to the hosted bento.build cache
+    ///
     /// Sign in to bento.build and stash the returned JWT in the OS
     /// keychain (or `~/.bento/credentials` as a 0600 fallback).
     /// After this, `bento build|ci|…` pick up the token automatically
