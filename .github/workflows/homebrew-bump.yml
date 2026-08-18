@@ -59,7 +59,7 @@ jobs:
           cat sums/SHA256SUMS
 
       - name: Checkout tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: bento-sh/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
