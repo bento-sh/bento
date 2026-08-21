@@ -26,3 +26,4 @@ CLAUDE.local.md
 # the repo ships with only user-facing docs + code comments.
 docs/design/
 .e2e-cache/
+.claude/
