@@ -85,20 +85,28 @@ trap 'rm -rf "$tmp"' EXIT
 
 curl_auth -fsSL -o "$tmp/bento.tar.gz" "$url" || die "download failed: $url (set GITHUB_TOKEN if the repo is private)"
 
+# Verification is mandatory. Every release publishes a `.sha256`
+# alongside its tarball, so a missing checksum file or a box with no
+# hashing tool is a broken environment, not a reason to install an
+# unverified binary from the network. Same posture as the GitHub
+# Action, which has never had a skip path.
 sha_url="${url}.sha256"
-if curl_auth -fsSL -o "$tmp/bento.tar.gz.sha256" "$sha_url" 2>/dev/null; then
-    log "verifying checksum..."
-    expected=$(awk '{print $1}' "$tmp/bento.tar.gz.sha256")
-    if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "$tmp/bento.tar.gz" | awk '{print $1}')
-    elif command -v shasum >/dev/null 2>&1; then
-        actual=$(shasum -a 256 "$tmp/bento.tar.gz" | awk '{print $1}')
-    else
-        log "no sha256sum or shasum available — skipping verification"
-        actual="$expected"
-    fi
-    [ "$expected" = "$actual" ] || die "checksum mismatch (expected $expected, got $actual)"
+curl_auth -fsSL -o "$tmp/bento.tar.gz.sha256" "$sha_url" \
+    || die "checksum download failed: $sha_url (set GITHUB_TOKEN if the repo is private) — refusing to install an unverified binary"
+
+log "verifying checksum..."
+expected=$(awk '{print $1}' "$tmp/bento.tar.gz.sha256")
+[ -n "$expected" ] || die "checksum file is empty: $sha_url — refusing to install an unverified binary"
+
+if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$tmp/bento.tar.gz" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "$tmp/bento.tar.gz" | awk '{print $1}')
+else
+    die "no sha256sum or shasum on PATH — cannot verify the download. Install coreutils (Linux) or perl (macOS), then re-run."
 fi
+
+[ "$expected" = "$actual" ] || die "checksum mismatch (expected $expected, got $actual)"
 
 tar -xzf "$tmp/bento.tar.gz" -C "$tmp"
 src="$tmp/${asset}/bento"

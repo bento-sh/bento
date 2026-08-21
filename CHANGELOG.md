@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`install.sh` verifies the checksum or refuses to install.** Two paths used to fall through to an unverified binary: a `.sha256` asset that failed to download was swallowed (the fetch was `2>/dev/null` inside an `if`), and a machine with neither `sha256sum` nor `shasum` logged "skipping verification" and set `actual="$expected"` so the comparison could not fail. Every release publishes a `.sha256` next to its tarball, so both cases are a broken environment rather than a reason to proceed — they're `die()` now, matching the GitHub Action, which has never had a skip path.
+
 ## [0.2.0] - 2026-08-21
 
 ### Added
