@@ -299,6 +299,8 @@ The bento version doesn't just *look* shorter — it actually does more: every t
 | `json` | Emit the execution report to stdout / workflow outputs as JSON. |
 | `cache-token` | JWT for the hosted remote cache (`[cache] remote = "bento://…"`). Store it as a repo secret — without it, a workspace configured for the hosted cache silently uses only the local + `actions/cache` tiers. |
 | `job-summary` | When `true` (default), append a run summary to the job's step summary page. |
+| `pr-comment` | `auto` (default) posts the same report as a sticky PR comment on `pull_request` events, `always` posts wherever a PR resolves, `never` disables it. Needs `permissions: pull-requests: write`. |
+| `github-token` | Token used for the PR comment (default: the workflow token). Pass a PAT to comment as a bot account. |
 | `cache-key-suffix` | Bump to force a cold cache after a bento version upgrade. |
 | `source-path` | Path to a bento Cargo workspace — used as a fallback when `version` is empty. |
 | `install-toolchains` | When `true` (default), action runs `bento toolchain install` and caches `~/.bento/tools/`. Set `false` to chain `actions/setup-*` yourself. |
@@ -348,6 +350,48 @@ of dish, task, outcome, cache key, and duration, capped at 50 rows, with
 the captured stderr of anything that failed inlined underneath. It reads
 the same `--report-file` JSON the `report` output carries, so it costs
 one `jq` pass and nothing else.
+
+### Pull-request comment
+
+On pull requests the same report is posted as a **sticky comment** —
+one comment per PR, edited in place on every push, headed with
+
+`### bento · 41/47 tasks cached (87%) · ~3m12s saved`
+
+(the saving is estimated from the mean duration of the tasks that did
+run — a cache hit only records its restore time). Set
+`pr-comment: 'never'` to turn it off, `'always'` to comment outside
+`pull_request` events too.
+
+It needs write access to pull requests, which the default `GITHUB_TOKEN`
+does not have:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+```
+
+```yaml
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bento-sh/bento@v0.1
+        with:
+          version: '0.1.0'
+          cache-token: ${{ secrets.BENTO_CACHE_TOKEN }}
+```
+
+The token reaches `gh` through the `github-token` input, which defaults
+to the workflow's own token — pass a PAT there to comment from a bot
+account instead. Nothing about the comment can fail the job: a missing
+token, a read-only permission scope, or an API error is a `::warning::`
+on the run and the job's exit code stays bento's.
 
 ### Toolchain handling
 
