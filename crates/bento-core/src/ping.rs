@@ -135,7 +135,7 @@ fn plan(dir: &Path, now: u64, posture_enabled: bool) -> Option<(String, Vec<&'st
     // Consent before data. The run that prints the notice sends
     // nothing, giving the user a chance to opt out first.
     if !state.notice_shown {
-        eprintln!("bento: {NOTICE}");
+        eprintln!("{NOTICE}");
         state.notice_shown = true;
         let _ = write_state(&state_path, &state);
         return None;

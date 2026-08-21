@@ -55,12 +55,17 @@ remote_region = "us-east-1"
 #   bento cache prune --max-size 5GiB --older-than 30d
 
 [telemetry]
-# Build reports — sent only to the `bento://` cache remote configured
-# above. Wire shape: package, branch, sha, cache_hit_ratio, status,
-# duration_ms (no PII, env values, or command lines). Self-hosters with
-# no `bento://` remote: nothing is ever sent. Opt out via this flag,
-# or per-machine via `BENTO_TELEMETRY=0` (also accepts `false` / `no`
-# / `off`). `bento doctor` reports the resolved posture.
+# Two things, one flag:
+#  - Build reports — sent only to the `bento://` cache remote configured
+#    above. Wire shape: package, branch, sha, cache_hit_ratio, status,
+#    duration_ms (no PII, env values, or command lines). Self-hosters
+#    with no `bento://` remote: nothing is ever sent.
+#  - Anonymous ping — install / first_run / weekly_active, carrying a
+#    random machine id, the bento version, and os / arch. No repo names,
+#    paths, dish names, or env names, ever.
+# Opt out via this flag, or per-machine via `BENTO_TELEMETRY=0` (also
+# accepts `false` / `no` / `off`). `bento doctor` reports the resolved
+# posture.
 enabled = true
 
 [execution]
@@ -134,7 +139,7 @@ remain the primary sink there.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `true` | Send a build report to the configured `bento://` cache remote after `bento ci` and `bento build`. Wire shape: `package`, `branch`, `sha`, `cache_hit_ratio`, `status`, `duration_ms` — no PII, env values, or command lines. Best-effort POST: failures are logged at `warn`, never block the build. With no `bento://` remote configured, nothing is ever sent regardless of this flag. |
+| `enabled` | bool | `true` | Gates both the build report and the anonymous ping, described below. |
 
 **Opt-out paths** (precedence: either says off → off; the env var cannot force telemetry on if the config disables it):
 
@@ -142,6 +147,39 @@ remain the primary sink there.
 - `BENTO_TELEMETRY=0` (or `false` / `no` / `off`) — per-machine override, useful in CI or local shells.
 
 `bento doctor` reports the resolved posture as the `telemetry.posture` check (`enabled` / `disabled by config` / `disabled by env` / `disabled by both`).
+
+#### Build report
+
+Sent to the configured `bento://` cache remote after `bento ci` and `bento build`. Wire shape: `package`, `branch`, `sha`, `cache_hit_ratio`, `status`, `duration_ms`, `client`. Best-effort POST: failures are logged at `warn`, never block the build. With no `bento://` remote configured, nothing is ever sent regardless of this flag.
+
+#### Anonymous ping
+
+`POST https://api.bento.build/v1/cli/ping` (override the base with `$BENTO_API_BASE`) on the exit path of `bento ci` / `prime` / `build` / `test` / `lint`. It answers one question — how many people installed bento and actually ran it — which the build report can't, because that only fires once a `bento://` remote and a token are configured.
+
+Three events, each deduped in `~/.bento/state/telemetry.json`: `install` (first ping ever from this machine), `first_run` (first verb run in a loadable workspace), `weekly_active` (a heartbeat, at most once per 7 days).
+
+The payload is these six fields and nothing else:
+
+```json
+{
+  "event": "install",
+  "machine_id": "3f2a9c04-7b1e-4d55-9a10-2c8e6f0b47d3",
+  "bento_version": "0.1.2",
+  "os": "linux",
+  "arch": "x86_64",
+  "install_method": "install.sh"
+}
+```
+
+`machine_id` is a UUIDv4 drawn from the OS random source on first ping and stored 0600 at `~/.bento/state/machine_id`. It is **not** derived from your hostname, username, MAC address, or disk UUID — delete the file and you are a new machine. `os` / `arch` / `install_method` / `event` are closed allowlists the server rejects anything outside of; `install_method` reads `~/.bento/state/install_method` (written by the installer) and falls back to `unknown`.
+
+**Never sent, by construction:** repository names or paths, dish or bento names, task names, branch names, commit SHAs, env var names or values, command lines, file contents, usernames, hostnames, IP-derived identifiers. Your IP arrives with the HTTP request as it does with any request; the server uses it for rate limiting and never stores it.
+
+**First-run notice.** The first invocation that would ping instead prints one line to stderr and sends nothing:
+
+> bento sends an anonymous install/activity ping (random id, version, event name — nothing about your code). Disable: [telemetry] enabled = false or BENTO_TELEMETRY=0. Docs: docs/configuration.md#telemetry
+
+Opting out after reading it means no ping was ever sent. Opted out, bento writes nothing under `~/.bento/state` at all.
 
 ### `[execution]`
 
