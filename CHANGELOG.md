@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-21
+
 ### Added
 
 - **Anonymous install / activity ping.** `bento ci` / `prime` / `build` / `test` / `lint` POST a six-field event to `https://api.bento.build/v1/cli/ping` (`$BENTO_API_BASE` overrides the base): `event` (`install` / `first_run` / `weekly_active`), `machine_id`, `bento_version`, `os`, `arch`, `install_method` — every enum-shaped field a closed allowlist. It answers what build reports can't: they only fire once a `bento://` remote and a token are wired up, so everyone who never signs up for the hosted cache is invisible. `machine_id` is a UUIDv4 drawn from the OS random source and stored 0600 at `~/.bento/state/machine_id`, never derived from hostname / username / MAC / disk UUID; delete the file to reset it. No repo names, paths, dish or task names, branches, SHAs, env names or values, command lines, usernames or hostnames are sent, and the server never stores the request IP. Gated on the same `[telemetry] enabled` / `BENTO_TELEMETRY` posture as build reports (either says off → off), where off means nothing is sent *and* nothing is written under `~/.bento/state`. The first run that would ping instead prints a one-line stderr notice and sends nothing, so opting out after reading it means no ping ever left the machine. `weekly_active` fires at most once per 7 days; failures are swallowed on a 2 second timeout.
