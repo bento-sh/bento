@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository purpose
 
-**bento** is a polyglot monorepo orchestrator — one CLI that wraps every dish's native package manager (npm / pnpm / yarn / bun / cargo / go / composer / pip / bundle / mvn / gradle / deno) behind uniform verbs. Positioned as "built for agents first, first-class for humans."
+**bento** is a polyglot monorepo orchestrator — one CLI that wraps every dish's native package manager (npm / pnpm / yarn / bun / cargo / go / composer / pip / bundle / mvn / gradle / dotnet / deno) behind uniform verbs. Positioned as "built for agents first, first-class for humans."
 
 **Language:** Rust (edition 2021, MSRV 1.88 — enforced by ci.yml's `msrv` job; the build toolchain is pinned separately in `rust-toolchain.toml`).
 

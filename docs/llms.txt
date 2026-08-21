@@ -1,6 +1,6 @@
 # bento
 
-> bento is a polyglot monorepo orchestrator: one CLI that wraps every subproject's native package manager (npm / pnpm / yarn / bun / cargo / go / composer / pip / bundle / mvn / gradle / deno) behind uniform verbs, with content-addressed caching, toolchain pinning, and deploy-target routing. Built for agents first, first-class for humans.
+> bento is a polyglot monorepo orchestrator: one CLI that wraps every subproject's native package manager (npm / pnpm / yarn / bun / cargo / go / composer / pip / bundle / mvn / gradle / dotnet / deno) behind uniform verbs, with content-addressed caching, toolchain pinning, and deploy-target routing. Built for agents first, first-class for humans.
 
 Vocabulary: a **dish** is one project directory, declared by a `dish.toml`; a **bento** is a set of dishes that ship together (`bentos/<name>.toml`); a **garnish** is a post-deploy hook (Slack, Linear, custom). Repo-wide settings live in `bento.toml`.
 

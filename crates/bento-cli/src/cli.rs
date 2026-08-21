@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 /// bento — polyglot monorepo orchestrator, built for agents first.
 ///
 /// One CLI over npm / pnpm / yarn / bun / deno / cargo / go / pip / uv /
-/// bundle / composer / mvn / gradle: `bento ci` plans, builds, tests and
+/// bundle / composer / mvn / gradle / dotnet: `bento ci` plans, builds, tests and
 /// lints every dish, rebuilding only what changed (content-hash cache:
 /// local, CI, remote). `--json` everywhere; `bento prime` to orient.
 #[derive(Parser, Debug)]

@@ -13,7 +13,7 @@
 
 </div>
 
-Bento plans, builds, tests, and caches across monorepos that mix any combination of ecosystems — Go, Rust, Python, Ruby, PHP, JVM (Maven and Gradle), and the whole TypeScript/JavaScript family (npm, pnpm, yarn, Bun, Deno). It wraps native package managers rather than replacing them, caches by content hash across local, CI, and remote tiers, and exposes every decision as structured JSON.
+Bento plans, builds, tests, and caches across monorepos that mix any combination of ecosystems — Go, Rust, Python, Ruby, PHP, JVM (Maven and Gradle), .NET, and the whole TypeScript/JavaScript family (npm, pnpm, yarn, Bun, Deno). It wraps native package managers rather than replacing them, caches by content hash across local, CI, and remote tiers, and exposes every decision as structured JSON.
 
 The result: CI in seconds, not minutes. Agents that can read, reason, and recover without guesswork. Humans that can ship.
 
@@ -658,7 +658,7 @@ Every page above is plain markdown — GitHub serves the source at the same path
 
 Shipping features:
 
-- **13 built-in language adapters** — Go, Cargo, Python (pip + uv), Ruby, PHP, Maven, Gradle, npm, pnpm, yarn, Bun, Deno. Plus a subprocess plugin protocol for anything else.
+- **14 built-in language adapters** — Go, Cargo, Python (pip + uv), Ruby, PHP, Maven, Gradle, .NET, npm, pnpm, yarn, Bun, Deno. Plus a subprocess plugin protocol for anything else.
 - **`bento init`** auto-detects every dish in an existing monorepo and captures toolchain pins from the ecosystem's standard files (`.nvmrc`, `go.mod`, `rust-toolchain.toml`, `.tool-versions`, `volta.node`, `engines.node`, …).
 - **`bento dish add`** scaffolds new dishes or adopts existing code with one command.
 - **Embedded toolchain manager** — pinned Go / Rust / Node / Python / … versions auto-installed by the action, wired into every task's `PATH`.

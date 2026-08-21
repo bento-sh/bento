@@ -205,7 +205,7 @@ Per-dish `dish.toml` `[toolchain]` overrides these.
 
 Without a `[toolchain]` block, each adapter still detects a pin from the project's own version files and folds it into the cache key. Those files resolve from the dish dir upward, stopping at the repo root (a directory holding `.git` or `bento.toml`), so one `.nvmrc` / `.tool-versions` / `rust-toolchain.toml` / `.python-version` / `.ruby-version` at the top of a monorepo covers every dish beneath it. nvm's floating aliases — `lts/*`, `node`, `latest`, `stable` — mean *no* pin; bento falls through to the next signal rather than keying on a version that changes underneath it. `lts/<codename>` resolves to its major.
 
-Pin keys are the *runtime* name, not the adapter id: `rust` (cargo dishes), `java` (maven / gradle dishes), `node` (npm / pnpm / yarn dishes), `go`, `python`, `bun`, `deno`, `ruby`, `php`.
+Pin keys are the *runtime* name, not the adapter id: `rust` (cargo dishes), `java` (maven / gradle dishes), `node` (npm / pnpm / yarn dishes), `go`, `python`, `bun`, `deno`, `ruby`, `php`, `dotnet`.
 
 With an explicit pin in force, the key carries the pin (source + version) and bento stops hashing the host's `<tool> --version` — that binary isn't what runs, and hashing it would drift the key per machine. Unpinned dishes (adapter-detected or system-resolved) still hash the probe so patch-level host drift invalidates.
 
@@ -345,7 +345,7 @@ run = "air"
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | required | Dish handle. Used by CLI flags (`bento build <name>`) and bentos' `dishes` list. Must be unique across the workspace. |
-| `language` | string | adapter-detected | Adapter id (`go`, `cargo`, `python`, `python-uv`, `ruby`, `php`, `maven`, `gradle`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`, `deno`, or any plugin's id). When omitted, bento auto-detects from the dish dir. |
+| `language` | string | adapter-detected | Adapter id (`go`, `cargo`, `python`, `python-uv`, `ruby`, `php`, `maven`, `gradle`, `dotnet`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`, `deno`, or any plugin's id). When omitted, bento auto-detects from the dish dir. |
 | `package_manager` | string | unset | Reserved for future use; no behaviour today. |
 | `inputs` | `string[]` | `[]` | Glob patterns relative to the dish dir, **unioned** into every task's cache key on top of the adapter's defaults. Adapter defaults are pessimistic — most adapters hash the whole dish tree (`**`) minus derived dirs (`node_modules/`, `target/`, `dist/`, `build/`, `.next/`, `vendor/`, `.venv/`, …), so you rarely need this; it's for a no-adapter dish, or to hash a file the adapter's derived list excludes. Adapters add their own fingerprint files automatically (lockfiles, toolchain pin files, `.tool-versions`). |
 | `outputs` | `string[]` | `[]` | Glob patterns of build artefacts. Listed by `bento artifacts` and the GHA `artifacts` output. |
