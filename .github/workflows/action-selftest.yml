@@ -28,6 +28,10 @@ name: action-selftest
 #                 workflow; actionlint can't lint it directly. The
 #                 smoke jobs cover its runtime.)
 #
+# Every invocation passes `pr-comment: 'never'`: five smoke jobs on one
+# PR would fight over the same sticky comment, and this workflow asserts
+# on step outputs, not on what lands in the PR thread.
+#
 # Fixture choice: tests/e2e/fixtures/monorepo-go-node — minimal
 # polyglot fixture (Go backend + node-npm frontend). Exercises adapter
 # detection across two languages without dragging in heavy runtimes
@@ -114,6 +118,7 @@ jobs:
         with:
           version: '0.1.2'
           workspace-path: tests/e2e/fixtures/monorepo-go-node
+          pr-comment: 'never'
           # `task: build` instead of `ci` — the fixture's `lint` task
           # calls `golangci-lint`, which isn't on stock GitHub runners
           # and isn't worth pre-installing for an action-wrapper smoke.
@@ -205,6 +210,7 @@ jobs:
         with:
           source-path: '.'
           workspace-path: tests/e2e/fixtures/monorepo-go-node
+          pr-comment: 'never'
           task: build
           cache-key-suffix: selftest-v1
 
@@ -237,6 +243,7 @@ jobs:
         with:
           source-path: '.'
           workspace-path: tests/e2e/fixtures/action-selftest-python-uv
+          pr-comment: 'never'
           task: build
           json: 'true'
           cache-key-suffix: selftest-toolchain-python-uv-v1
@@ -274,6 +281,7 @@ jobs:
         with:
           source-path: '.'
           workspace-path: tests/e2e/fixtures/action-selftest-bun
+          pr-comment: 'never'
           task: build
           json: 'true'
           cache-key-suffix: selftest-toolchain-bun-v1

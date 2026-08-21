@@ -147,6 +147,31 @@ inputs:
     required: false
     default: 'true'
 
+  pr-comment:
+    description: >
+      Sticky pull-request comment carrying the same report as the job
+      summary — one comment per PR, edited in place on every push.
+      'auto' (default) comments on `pull_request` events only;
+      'always' also comments on other events when a PR can be
+      resolved for the ref; 'never' disables it.
+
+      The calling job must grant `permissions: pull-requests: write`
+      and the token reaches `gh` through the `github-token` input
+      (default: the workflow token). Anything that goes wrong —
+      missing token, read-only permissions, API error — is a
+      `::warning::`, never a job failure.
+    required: false
+    default: 'auto'
+
+  github-token:
+    description: >
+      Token used for the `pr-comment` step. Defaults to the workflow's
+      own token, which still needs `permissions: pull-requests: write`
+      on the calling job. Pass a PAT to comment as a different account
+      (e.g. a bot with an avatar).
+    required: false
+    default: ${{ github.token }}
+
   cache-key-suffix:
     description: >
       Extra key component appended to the bento cache key. Bump it to force
@@ -395,3 +420,17 @@ runs:
         BENTO_CACHE_TOKEN_INPUT: ${{ inputs.cache-token }}
         REPORT_FILE: ${{ runner.temp }}/bento-report.json
       run: bash "${{ github.action_path }}/scripts/action/run.sh" execute
+
+    # `always()` because a red run is exactly when the comment is worth
+    # reading. The phase itself always exits 0 — the job's status stays
+    # whatever `execute` made it.
+    - name: Comment on the pull request
+      if: always() && inputs.pr-comment != 'never'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.path }}
+      env:
+        BENTO_PR_COMMENT: ${{ inputs.pr-comment }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPORT_FILE: ${{ runner.temp }}/bento-report.json
+      run: bash "${{ github.action_path }}/scripts/action/run.sh" pr-comment

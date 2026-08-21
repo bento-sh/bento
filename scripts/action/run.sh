@@ -13,7 +13,7 @@ set -euo pipefail
 
 PHASE="${1:-}"
 if [ -z "$PHASE" ]; then
-    echo "usage: run.sh <install-bento|install-toolchains|preflight|execute|summarize>" >&2
+    echo "usage: run.sh <install-bento|install-toolchains|preflight|execute|summarize|pr-body|pr-comment>" >&2
     exit 2
 fi
 
@@ -365,6 +365,101 @@ summarize() {
     ' "$1"
 }
 
+# HTML marker that makes the PR comment sticky: the update path finds
+# the previous comment by grepping bodies for it.
+PR_MARKER='<!-- bento-summary -->'
+
+# One-line headline for the PR comment. "Saved" is an estimate, not a
+# measurement — a cache hit's duration_ms is its restore cost, not the
+# build it replaced — so it extrapolates from the mean duration of the
+# tasks that did run this session.
+# ponytail: mean-of-built heuristic; needs per-task historical durations
+# from the cache server to do better.
+pr_headline() {
+    jq -r '
+      def dur: (. / 1000 | floor) as $s
+        | if $s >= 60 then "\($s / 60 | floor)m\($s % 60)s" else "\($s)s" end;
+      (.summary // {}) as $s
+      | ($s.tasks // 0) as $t
+      | ($s.hits // 0) as $h
+      | [ .bentos[]?.dishes[]?.tasks[]? | select(.outcome.kind == "built") | (.duration_ms // 0) ] as $built
+      | (if ($built | length) > 0 and $h > 0 then ($built | add) / ($built | length) * $h else 0 end) as $saved
+      | "### bento · \($h)/\($t) tasks cached (\(if $t > 0 then ($h * 100 / $t | round) else 0 end)%)"
+        + (if $saved > 0 then " · ~\($saved | dur) saved" else "" end)
+        + (if ($s.failed // 0) > 0 then " · \($s.failed) failed" else "" end)
+    ' "$1"
+}
+
+# Full PR comment body: marker, headline, the same markdown the job
+# summary gets, and a cloud link for workspaces on the hosted cache.
+# Reads bento.toml from the cwd, so callers run it in the workspace.
+pr_body() {
+    printf '%s\n\n' "$PR_MARKER"
+    pr_headline "$1"
+    printf '\n'
+    summarize "$1"
+    case "$(read_toml_value cache remote)" in
+        bento://*) printf '\n[View on bento cloud → https://app.bento.build](https://app.bento.build)\n' ;;
+    esac
+}
+
+# Post (or update) the sticky PR comment. Every failure here is a
+# `::warning::` and a zero exit: a missing token or a job scoped to
+# `pull-requests: read` must not turn a green bento run red.
+phase_pr_comment() {
+    case "${BENTO_PR_COMMENT:-auto}" in
+        never)  return 0 ;;
+        always) ;;
+        auto)   [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] || return 0 ;;
+        *)
+            echo "::warning::pr-comment: unknown value '${BENTO_PR_COMMENT}' (expected auto, always, never) — skipping the PR comment."
+            return 0
+            ;;
+    esac
+
+    [ -f "${REPORT_FILE:-}" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+        echo "::warning::pr-comment: no GH_TOKEN / GITHUB_TOKEN in the environment — skipping the PR comment. Grant the job 'permissions: pull-requests: write' (the action's github-token input defaults to the workflow token)."
+        return 0
+    fi
+    export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
+
+    local pr="${PR_NUMBER:-}"
+    if [ -z "$pr" ]; then
+        pr="$(gh pr view --json number --jq .number 2>/dev/null || true)"
+    fi
+    if [ -z "$pr" ]; then
+        echo "::warning::pr-comment: no pull request found for this ref — skipping the PR comment."
+        return 0
+    fi
+
+    local body
+    body="$(mktemp)"
+    if ! pr_body "$REPORT_FILE" > "$body"; then
+        echo "::warning::pr-comment: rendering the comment body failed — skipping the PR comment."
+        rm -f "$body"
+        return 0
+    fi
+
+    # --paginate applies --jq per page, so the id stream can span pages:
+    # take the first and tolerate the SIGPIPE that closing early gives gh.
+    local id
+    id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments" --paginate \
+            --jq ".[] | select(.body | contains(\"$PR_MARKER\")) | .id" 2>/dev/null | head -1 || true)"
+
+    if [ -n "$id" ]; then
+        gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" -F "body=@${body}" --silent \
+            || echo "::warning::pr-comment: updating comment ${id} failed."
+    else
+        gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments" -F "body=@${body}" --silent \
+            || echo "::warning::pr-comment: posting the comment failed — does the job grant 'permissions: pull-requests: write'?"
+    fi
+    rm -f "$body"
+    return 0
+}
+
 phase_preflight() {
     BENTO_ARGS=("doctor")
     if [ -n "${BENTO_ENV:-}" ]; then
@@ -430,8 +525,10 @@ case "$PHASE" in
     preflight)           phase_preflight ;;
     execute)             phase_execute ;;
     summarize)           summarize "${2:?usage: run.sh summarize <report.json>}" ;;
+    pr-body)             pr_body "${2:?usage: run.sh pr-body <report.json>}" ;;
+    pr-comment)          phase_pr_comment ;;
     *)
-        echo "::error::unknown phase '$PHASE' (expected: install-bento, install-toolchains, preflight, execute, summarize)" >&2
+        echo "::error::unknown phase '$PHASE' (expected: install-bento, install-toolchains, preflight, execute, summarize, pr-body, pr-comment)" >&2
         exit 2
         ;;
 esac
