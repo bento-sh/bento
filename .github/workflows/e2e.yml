@@ -155,6 +155,12 @@ jobs:
           fi
           mvn -version
 
+      # .NET. Pin 8.0.x: the fixture targets net8.0 and an 8.0.x SDK
+      # bundles that targeting pack, so restore stays offline-safe.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.x'
+
       - name: Docker sanity
         run: docker --version
 

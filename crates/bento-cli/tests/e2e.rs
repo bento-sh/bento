@@ -29,6 +29,7 @@ mod e2e {
     pub mod bun;
     pub mod cargo;
     pub mod deno;
+    pub mod dotnet;
     pub mod go;
     pub mod gradle;
     pub mod maven;

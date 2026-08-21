@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Zero PackageReference on purpose: `dotnet restore` then resolves
+       entirely from the SDK's bundled targeting pack, so the harness
+       doesn't depend on nuget.org being reachable or fast. net8.0 is
+       LTS; CI installs the matching 8.0.x SDK. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
