@@ -156,13 +156,14 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }} -p bento-cli
 
   # The composite action's shell helpers aren't covered by any cargo
-  # test — scripts/action/test_summary.sh is their unit suite.
+  # test — scripts/action/test_*.sh are their unit suite.
   action-scripts:
     name: action shell scripts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash scripts/action/test_summary.sh
+      - run: bash scripts/action/test_pr_comment.sh
 
   noop-plugin:
     # Explicit so the badge can't go green while the plugin e2e
