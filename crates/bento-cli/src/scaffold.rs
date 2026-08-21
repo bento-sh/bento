@@ -12,7 +12,7 @@
 //! `dishes` list via `toml_edit`, so comments and formatting survive.
 //!
 //! Supported languages: `go`, `node-npm`, `node-pnpm`, `node-yarn`,
-//! `bun`, `deno`, `cargo`, `python`.
+//! `bun`, `deno`, `cargo`, `python`, `dotnet`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -196,6 +196,7 @@ fn scaffold(
         "php" => scaffold_php(dish_abs, dish_name)?,
         "maven" => scaffold_maven(dish_abs, dish_name)?,
         "gradle" => scaffold_gradle(dish_abs, dish_name)?,
+        "dotnet" => scaffold_dotnet(dish_abs, dish_name)?,
         other => {
             return Err(ScaffoldError::UnsupportedLanguage {
                 lang: other.to_string(),
@@ -1119,6 +1120,48 @@ fn scaffold_gradle(dish_abs: &Path, dish_name: &str) -> Result<(Vec<PathBuf>, Ve
     Ok((files, next_steps))
 }
 
+// ── .NET scaffold ──────────────────────────────────
+
+fn scaffold_dotnet(dish_abs: &Path, dish_name: &str) -> Result<(Vec<PathBuf>, Vec<String>)> {
+    // net8.0 is the current LTS and every supported SDK (8, 9, 10) can
+    // build it. No `global.json`: pinning the scaffold to whatever SDK
+    // happens to be on this machine would break the next person's.
+    let csproj = "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+         \x20 <PropertyGroup>\n\
+         \x20   <OutputType>Exe</OutputType>\n\
+         \x20   <TargetFramework>net8.0</TargetFramework>\n\
+         \x20   <ImplicitUsings>enable</ImplicitUsings>\n\
+         \x20   <Nullable>enable</Nullable>\n\
+         \x20 </PropertyGroup>\n\
+         </Project>\n";
+    let program_cs = format!("Console.WriteLine(\"hello from {dish_name}\");\n");
+    // dish.toml is empty of [tasks.*] — the dotnet adapter's defaults
+    // (build / test / check / lint, all --no-restore) are exactly right
+    // for a fresh project.
+    let dish_toml = format!(
+        "name = \"{dish_name}\"\n\
+         language = \"dotnet\"\n\
+         \n\
+         # Adapter defaults for dotnet cover build / test / check / lint.\n\
+         # Override them by adding [tasks.<name>] blocks here.\n"
+    );
+
+    let files = vec![
+        write_file(&dish_abs.join(format!("{dish_name}.csproj")), csproj)?,
+        write_file(&dish_abs.join("Program.cs"), &program_cs)?,
+        write_file(&dish_abs.join("dish.toml"), &dish_toml)?,
+    ];
+
+    let rel = dish_abs.display();
+    let next_steps = vec![
+        format!("cd {rel}"),
+        "dotnet run".to_string(),
+        format!("bento build {dish_name}"),
+    ];
+
+    Ok((files, next_steps))
+}
+
 // ── Java version helper (shared between Maven + Gradle scaffolds) ──
 
 fn detect_java_version() -> String {
@@ -1653,6 +1696,37 @@ mod tests {
         assert!(dish.contains(r#"language = "gradle""#));
         // Scaffold uses system `gradle` not `./gradlew` (no wrapper generated).
         assert!(dish.contains("run = \"gradle build -x test\""));
+    }
+
+    #[test]
+    fn dotnet_scaffold_creates_expected_files() {
+        let fx = default_fixture();
+        let ws = load(&fx.root);
+        run(
+            ScaffoldRequest {
+                workspace_root: &fx.root,
+                dish_rel: Path::new("apps/ledger"),
+                language: Some("dotnet"),
+                bento: None,
+            },
+            &ws,
+        )
+        .unwrap();
+
+        assert!(fx.root.join("apps/ledger/ledger.csproj").exists());
+        assert!(fx.root.join("apps/ledger/Program.cs").exists());
+
+        let csproj = std::fs::read_to_string(fx.root.join("apps/ledger/ledger.csproj")).unwrap();
+        assert!(csproj.contains("<TargetFramework>net8.0</TargetFramework>"));
+        assert!(csproj.contains("Microsoft.NET.Sdk"));
+
+        let program = std::fs::read_to_string(fx.root.join("apps/ledger/Program.cs")).unwrap();
+        assert!(program.contains("hello from ledger"));
+
+        let dish = std::fs::read_to_string(fx.root.join("apps/ledger/dish.toml")).unwrap();
+        assert!(dish.contains(r#"language = "dotnet""#));
+        // Adapter defaults — no [tasks.*] section header expected.
+        assert!(!dish.contains("\n[tasks."));
     }
 
     #[test]

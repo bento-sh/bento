@@ -339,8 +339,8 @@ fn classify_login(err: &LoginError) -> BentoError {
 fn classify_scaffold(err: &ScaffoldError) -> BentoError {
     use ScaffoldError::*;
     const SUPPORTED_LANGS: &str =
-        "go, cargo, python, python-uv, ruby, php, maven, gradle, node-npm, node-pnpm, \
-         node-yarn, bun, deno";
+        "go, cargo, python, python-uv, ruby, php, maven, gradle, dotnet, node-npm, \
+         node-pnpm, node-yarn, bun, deno";
     match err {
         MissingLanguage => BentoError::new("scaffold_missing_language", err.to_string())
             .with_hint(format!("pass --lang <one of: {SUPPORTED_LANGS}>"))
@@ -489,6 +489,7 @@ mod tests {
             "php",
             "maven",
             "gradle",
+            "dotnet",
             "node-npm",
             "node-pnpm",
             "node-yarn",

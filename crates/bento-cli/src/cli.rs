@@ -544,8 +544,8 @@ pub enum DishAction {
 
         /// Language ecosystem to scaffold. Accepted values: `go`,
         /// `cargo`, `python`, `python-uv`, `ruby`, `php`, `maven`,
-        /// `gradle`, `node-npm`, `node-pnpm`, `node-yarn`, `bun`,
-        /// `deno`. Required when `<path>` is an empty directory;
+        /// `gradle`, `dotnet`, `node-npm`, `node-pnpm`, `node-yarn`,
+        /// `bun`, `deno`. Required when `<path>` is an empty directory;
         /// auto-detected when adopting an existing dish.
         #[arg(long, value_name = "LANG")]
         lang: Option<String>,
