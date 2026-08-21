@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 # The real floor, verified by ci.yml's `msrv` job: rmcp 1.5 pulls
 # darling 0.23, which declares 1.88.0, and bento-core's `unsafe extern`
@@ -86,14 +86,14 @@ url = "2"
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 
 # Internal crates (workspace-relative)
-bento-core = { path = "crates/bento-core", version = "0.1.2" }
-bento-config = { path = "crates/bento-config", version = "0.1.2" }
-bento-cache = { path = "crates/bento-cache", version = "0.1.2" }
-bento-adapters = { path = "crates/bento-adapters", version = "0.1.2" }
-bento-toolchain = { path = "crates/bento-toolchain", version = "0.1.2" }
-bento-watch = { path = "crates/bento-watch", version = "0.1.2" }
-bento-cas-protocol = { path = "crates/bento-cas-protocol", version = "0.1.2" }
-bento-plugin = { path = "crates/bento-plugin", version = "0.1.2" }
+bento-core = { path = "crates/bento-core", version = "0.2.0" }
+bento-config = { path = "crates/bento-config", version = "0.2.0" }
+bento-cache = { path = "crates/bento-cache", version = "0.2.0" }
+bento-adapters = { path = "crates/bento-adapters", version = "0.2.0" }
+bento-toolchain = { path = "crates/bento-toolchain", version = "0.2.0" }
+bento-watch = { path = "crates/bento-watch", version = "0.2.0" }
+bento-cas-protocol = { path = "crates/bento-cas-protocol", version = "0.2.0" }
+bento-plugin = { path = "crates/bento-plugin", version = "0.2.0" }
 
 [profile.release]
 lto = "thin"
