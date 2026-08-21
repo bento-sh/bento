@@ -16,6 +16,7 @@ pub mod errors;
 pub mod garnish;
 pub mod graph;
 pub mod inventory;
+pub mod ping;
 pub mod plan;
 pub mod plugins;
 pub mod prime;

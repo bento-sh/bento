@@ -41,6 +41,11 @@ fn main() {
     let cli = Cli::parse();
     init_tracing(cli.global.verbose);
     let as_json = cli.global.json;
+    // Resolved here because `run` consumes `cli`. `Some(_)` marks the
+    // verbs that count as real usage for the anonymous ping; the ping
+    // itself fires on the exit path so user-visible output is never
+    // gated on telemetry.
+    let ping_telemetry = pings_usage(&cli.command).then(|| telemetry_enabled(&cli.global));
     let exit_code = match run(cli) {
         Ok(code) => code,
         Err(err) => {
@@ -48,9 +53,38 @@ fn main() {
             1
         }
     };
+    if let Some(enabled) = ping_telemetry {
+        bento_core::ping::send(enabled);
+    }
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
+}
+
+/// Verbs that mean "someone is actually using bento on a real repo".
+/// Deliberately excludes read-only introspection (`plan`, `why`,
+/// `schema`) and the one-off setup verbs.
+fn pings_usage(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Ci
+            | Command::Prime { .. }
+            | Command::Build { .. }
+            | Command::Test { .. }
+            | Command::Lint { .. }
+    )
+}
+
+/// `[telemetry] enabled` for the workspace this invocation targets.
+///
+/// Fails closed: a workspace we can't find or can't parse can't have
+/// meaningfully consented, and "workspace loaded" is also what makes
+/// the run count as a first run at all.
+fn telemetry_enabled(global: &GlobalFlags) -> bool {
+    resolve_workspace_root(global)
+        .and_then(|root| Workspace::load(&root).map_err(Into::into))
+        .map(|w| w.repo.telemetry.enabled)
+        .unwrap_or(false)
 }
 
 fn init_tracing(verbose: bool) {

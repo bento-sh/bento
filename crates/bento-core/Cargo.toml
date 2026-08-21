@@ -33,5 +33,10 @@ bento-toolchain.workspace = true
 ureq.workspace = true
 base64.workspace = true
 
+# UUIDv4 for the anonymous ping's machine id. Already in the tree
+# transitively; a direct dep on the OS CSPRNG beats pulling `uuid` in
+# for one 16-byte draw.
+getrandom.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
