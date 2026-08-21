@@ -7,6 +7,7 @@ use crate::adapter::LanguageAdapter;
 use crate::bun::BunAdapter;
 use crate::cargo::CargoAdapter;
 use crate::deno::DenoAdapter;
+use crate::dotnet::DotnetAdapter;
 use crate::go::GoAdapter;
 use crate::gradle::GradleAdapter;
 use crate::maven::MavenAdapter;
@@ -52,6 +53,7 @@ impl AdapterRegistry {
                 Box::new(PhpAdapter),
                 Box::new(MavenAdapter),
                 Box::new(GradleAdapter),
+                Box::new(DotnetAdapter),
                 // Deno is tried before the Node family: a project with
                 // `deno.json` and nothing else is unambiguously Deno, and
                 // we don't want a stray `package.json` (say, for editor
@@ -128,6 +130,7 @@ mod tests {
             "php",
             "maven",
             "gradle",
+            "dotnet",
             "node-npm",
             "node-pnpm",
             "node-yarn",
@@ -214,6 +217,15 @@ mod tests {
         std::fs::write(tmp.path().join("package-lock.json"), "{}").unwrap();
         let adapter = reg.detect(tmp.path()).expect("adapter should detect");
         assert_eq!(adapter.id(), "node-npm");
+    }
+
+    #[test]
+    fn detect_finds_dotnet_in_csproj_project() {
+        let reg = AdapterRegistry::builtin();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("App.csproj"), "<Project/>").unwrap();
+        let adapter = reg.detect(tmp.path()).expect("adapter should detect");
+        assert_eq!(adapter.id(), "dotnet");
     }
 
     #[test]

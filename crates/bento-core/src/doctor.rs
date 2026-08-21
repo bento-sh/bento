@@ -345,7 +345,8 @@ fn check_config_keys(workspace: &Workspace) -> Vec<DoctorCheck> {
             "config.toolchain",
             format!(
                 "pinned but unused by any dish — check the spelling (pin keys are runtime \
-                 names: rust, java, node, go, python, bun, deno, ruby, php): {}",
+                 names: rust, java, node, go, python, bun, deno, ruby, php, \
+                 dotnet): {}",
                 unknown_pins.join(", ")
             ),
         )

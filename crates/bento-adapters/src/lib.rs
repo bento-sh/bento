@@ -20,6 +20,7 @@ mod cloudflare_worker;
 mod deno;
 mod diagnostic;
 mod diagnostic_record;
+mod dotnet;
 mod go;
 mod gradle;
 mod integration;
@@ -54,6 +55,7 @@ pub use cloudflare_worker::CloudflareWorkerIntegration;
 pub use deno::DenoAdapter;
 pub use diagnostic::{DiagnosticHook, DiagnosticParser, DiagnosticRerun, ParserId};
 pub use diagnostic_record::{Diagnostic, Severity};
+pub use dotnet::DotnetAdapter;
 pub use go::GoAdapter;
 pub use gradle::GradleAdapter;
 pub use integration::{
