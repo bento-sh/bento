@@ -654,7 +654,7 @@ Every page above is plain markdown — GitHub serves the source at the same path
 
 **Latest release: `v0.1.0` (2026-05-03).** See the [CHANGELOG](./CHANGELOG.md) for every release's notes.
 
-**Platforms.** v0.1 ships prebuilt binaries for Linux glibc (x86_64 + aarch64), Linux musl (x86_64 + aarch64, static — Alpine), and macOS (x86_64 + aarch64). **Windows support is coming in v0.2** — until then, Windows users can `cargo install bento-cli` to build from source (most code paths work; a handful of Unix-isms are tier-2 follow-up work).
+**Platforms.** Prebuilt binaries for Linux glibc (x86_64 + aarch64), Linux musl (x86_64 + aarch64, static — Alpine), and macOS (x86_64 + aarch64). **There is no native Windows build, and none is scheduled.** On Windows, run the installer inside WSL2 — it works unmodified there — or run bento in a Linux container. Building from source on native Windows mostly works, but a handful of Unix-isms are unfinished and untested.
 
 Shipping features:
 

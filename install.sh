@@ -48,7 +48,7 @@ case "$os" in
         fi
         ;;
     Darwin) os_triple=apple-darwin ;;
-    *)      die "unsupported OS: $os (v0.1 ships binaries for Linux + macOS only; Windows support coming in v0.2 — for now use 'cargo install bento-cli' on Windows)" ;;
+    *)      die "unsupported OS: $os (bento ships binaries for Linux and macOS only — there is no native Windows build and none is scheduled. On Windows, run this installer inside WSL2, or run bento in a Linux container.)" ;;
 esac
 
 case "$arch" in
