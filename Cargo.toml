@@ -54,7 +54,7 @@ globset = "0.4"
 tar = "0.4"
 indicatif = "0.17"
 tempfile = "3"
-dirs = "5"
+dirs = "6"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 getrandom = "0.3"
 semver = "1"
