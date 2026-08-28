@@ -302,7 +302,7 @@ runs:
 
     - name: Cache Cargo registry, git index, and build
       if: inputs.version == ''
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry/index
@@ -325,7 +325,7 @@ runs:
       run: echo "${HOME}/.bento-install/bin" >> "$GITHUB_PATH"
 
     - name: Restore bento content cache
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bento/cache
         key: bento-cache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
@@ -339,7 +339,7 @@ runs:
     # actions/cache@v4 silently skips non-existent paths, so caching all
     # of these is free for languages this workspace doesn't use.
     - name: Restore per-tool dependency caches
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/go/pkg/mod
@@ -363,7 +363,7 @@ runs:
 
     - name: Restore toolchain cache
       if: inputs.install-toolchains == 'true'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bento/tools
         # Hash every TOML and .tool-versions file in the workspace —
