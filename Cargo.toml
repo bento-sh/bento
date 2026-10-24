@@ -62,7 +62,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 wiremock = "0.6"
 flate2 = "1"
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 # object_store gives us S3, Cloudflare R2, MinIO, Backblaze, GCS, Azure
 # Blob, etc. under one async trait. bento-cache wraps it in a small
 # sync `S3Remote` over a dedicated tokio runtime.
